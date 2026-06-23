@@ -1,6 +1,6 @@
 [project]
 name = "programbench"
-version = "1.2.0"
+version = "1.2.1"
 description = "Evaluate whether LM-based SWE-agents can reverse-engineer black-box software systems"
 readme = "README.md"
 authors = [
