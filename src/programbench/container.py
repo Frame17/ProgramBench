@@ -117,9 +117,7 @@ class ContainerEnvironment:
                     timeout=30,
                 )
             except Exception as e:
-                log.warning(
-                    "in-container teardown after execute() timeout failed: %s", e
-                )
+                log.warning("in-container teardown after execute() timeout failed: %s", e)
             return {
                 "output": "",
                 "returncode": -1,
