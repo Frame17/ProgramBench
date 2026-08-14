@@ -1,0 +1,21 @@
+version = "1.0"
+
+[metadata]
+author_name = "ProgramBench"
+category = "{{ language }}"
+tags = ["programbench", "reverse-engineering", "{{ language }}"]
+instance_id = "{{ instance_id }}"
+upstream_repository = "{{ repository }}"
+upstream_commit = "{{ commit }}"
+{% if difficulty %}difficulty_explanation = "{{ difficulty }}"
+{% endif %}solution_explanation = "The reference source is intentionally removed; the agent must reverse-engineer the installed black-box binary and ship a compile.sh that rebuilds it offline."
+verification_explanation = "The verifier re-runs the agent's compile.sh (internet blocked) to build ./executable, then runs each active test branch's behavioral suite against it. Reward is the fraction of non-ignored tests that pass."
+
+[verifier]
+timeout_sec = 3600.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+build_timeout_sec = 1800.0

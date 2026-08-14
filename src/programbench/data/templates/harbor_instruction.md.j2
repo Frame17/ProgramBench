@@ -1,0 +1,30 @@
+# Reverse-engineer and re-implement a command-line program
+
+A working reference build of a command-line program is installed in this
+environment, together with whatever documentation ships with it (try its
+`--help`/`-h`, `man` pages, and observe how it behaves on real inputs). The
+program's source code has been removed — you only have the black-box binary.
+
+Your job is to re-implement the program from scratch so that your build
+reproduces its observable behavior.
+
+## What to deliver
+
+Work inside `/workspace`. When you are done, that directory must contain:
+
+- Your complete source code.
+- A `compile.sh` script that builds your program.
+
+`compile.sh` will be run from `/workspace` and **must** produce a single
+executable at `/workspace/executable`. It must build **fully offline** — no
+network access is available during the build, so vendor or bundle every
+dependency you need.
+
+## How you are scored
+
+After you finish, `/workspace/executable` is rebuilt from your `compile.sh`
+(with the internet blocked) and a hidden behavioral test suite runs it against
+many inputs, comparing its output to the reference program. Your score is the
+fraction of tests that pass. Aim to match the reference program's behavior as
+closely as possible, including edge cases, flags, exit codes, and output
+formatting.

@@ -9,6 +9,7 @@ from pathlib import Path
 import typer
 
 from programbench.cli.blob import app as blob_app
+from programbench.cli.harbor import app as harbor_app
 from programbench.cli.submit import app as submit_app
 from programbench.constants import DOCKER_CPUS
 
@@ -20,6 +21,7 @@ app = typer.Typer(
 )
 app.add_typer(blob_app, name="blob")
 app.add_typer(submit_app, name="submit")
+app.add_typer(harbor_app, name="harbor")
 
 
 @app.callback()
