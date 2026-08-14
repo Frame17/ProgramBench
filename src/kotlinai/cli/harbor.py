@@ -25,7 +25,7 @@ def export(
     slice_spec: str = typer.Option("", "--slice", help="Slice specification (e.g. '0:5')."),
 ) -> None:
     """Convert ProgramBench instances into Harbor tasks under OUT_DIR."""
-    from programbench.harbor import convert_all
+    from kotlinai.harbor import convert_all
 
     paths = convert_all(out_dir, instance_ids=instances or None, filter_spec=filter_spec, slice_spec=slice_spec)
     for p in paths:

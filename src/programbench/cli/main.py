@@ -8,8 +8,8 @@ from pathlib import Path
 
 import typer
 
+from kotlinai.cli.harbor import app as harbor_app
 from programbench.cli.blob import app as blob_app
-from programbench.cli.harbor import app as harbor_app
 from programbench.cli.submit import app as submit_app
 from programbench.constants import DOCKER_CPUS
 

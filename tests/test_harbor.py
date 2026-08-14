@@ -8,8 +8,8 @@
 
 import importlib.util
 
+from kotlinai.harbor import HARBOR_DATA, convert_instance
 from programbench.eval.eval import EvaluationResult, _process_branch_xml
-from programbench.harbor import HARBOR_DATA, convert_instance
 from programbench.utils.load_data import load_all_instances
 
 _spec = importlib.util.spec_from_file_location("run_verifier", HARBOR_DATA / "run_verifier.py")

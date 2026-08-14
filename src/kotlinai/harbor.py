@@ -23,13 +23,14 @@ from pathlib import Path
 
 from jinja2 import Environment, PackageLoader
 
-from programbench.constants import PACKAGE_ROOT, TASKS_DIR, image_name_from_instance_id
+from programbench.constants import TASKS_DIR, image_name_from_instance_id
 from programbench.utils.load_data import get_active_branches, load_all_instances
 
 CLEANROOM_TAG = "task_cleanroom_v6"
+PACKAGE_ROOT = Path(__file__).resolve().parent
 HARBOR_DATA = PACKAGE_ROOT / "data" / "harbor"
 
-_env = Environment(loader=PackageLoader("programbench", "data/templates"), autoescape=False)
+_env = Environment(loader=PackageLoader("kotlinai", "data/templates"), autoescape=False)
 
 
 def _lay_down_branch(task_dir: Path, branch: str, dest: Path, blob_dir: Path | None) -> None:
