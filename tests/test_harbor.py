@@ -41,11 +41,21 @@ def test_convert_instance_emits_full_harbor_layout(tmp_path):
         "tests/branches/33128f6b8600/eval/run.sh",
         "tests/branches/33128f6b8600/eval/tests/test_calculator.py",
         "solution/solve.sh",
+        "solution/compile.sh",
     ]:
         assert (out / rel).is_file(), rel
     dockerfile = (out / "environment" / "Dockerfile").read_text()
     assert "programbench/testorg_1776_calculator.abc1234:task_cleanroom_v6" in dockerfile
     assert "testorg/calculator" in (out / "task.toml").read_text()
+
+    # The gold solution clones the real reference repo at its commit and reuses
+    # the upstream build recipe as compile.sh.
+    solve = (out / "solution" / "solve.sh").read_text()
+    assert "https://github.com/testorg/calculator" in solve
+    assert "abc1234" in solve
+    assert (out / "solution" / "compile.sh").read_text() == (
+        out / "tests" / "branches" / "33128f6b8600" / "build.sh"
+    ).read_text()
 
 
 def test_convert_instance_overwrites_existing(tmp_path):

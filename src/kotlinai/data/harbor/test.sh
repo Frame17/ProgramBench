@@ -59,14 +59,36 @@ if [ "$compile_rc" -eq 0 ] && [ -f ./executable ]; then
   for bdir in "$TESTS_DIR"/branches/*/; do
     [ -d "$bdir" ] || continue
     branch="$(basename "$bdir")"
+    rm -rf ./eval ./results.xml
+    # Overlay the whole branch tree — eval/ plus root-level helpers the suite
+    # resolves at the workspace root (e.g. ./tui2cli, fixtures) — mirroring the
+    # real evaluator's copy_in_tar, then restore the canonical binary on top.
+    cp -a "$bdir/." "$WORKSPACE/"
+    [ -f ./tui2cli ] && chmod +x ./tui2cli
     rm -f ./executable && cp -f "$STASH" ./executable && chmod +x ./executable
     got="$(sha256sum ./executable | awk '{print $1}')"
     [ "$got" = "$expected_hash" ] || echo "WARN: executable hash drift in branch $branch" >&2
-    rm -rf ./eval ./results.xml
-    cp -a "$bdir/eval" ./eval
     chmod +x ./eval/run.sh 2>/dev/null || true
     sed -i 's/--timeout-method=thread/--timeout-method=signal/g' ./eval/run.sh 2>/dev/null || true
-    ./eval/run.sh
+    # All branches share one container here, so reap stray TUI app instances and
+    # tmux servers from the previous branch — leftovers cause contention/hangs.
+    pkill -9 -f "$WORKSPACE/executable" 2>/dev/null || true
+    tmux kill-server 2>/dev/null || true
+    runlog="$(mktemp)"
+    ./eval/run.sh 2>&1 | tee "$runlog"
+    # A hung TUI test can crash an xdist worker; xdist then raises INTERNALERROR
+    # and aborts the session, stranding every not-yet-run test. Mirror the real
+    # evaluator's serial-pytest fallback: on a crash (or no XML), re-run this
+    # branch with xdist disabled, where a per-test timeout fails only that test.
+    if [ ! -f ./eval/results.xml ] || grep -qE "INTERNALERROR|worker .* crashed|Replacing crashed worker" "$runlog"; then
+      echo "WARN: xdist crash/abort in branch $branch; retrying serially" >&2
+      pkill -9 -f "$WORKSPACE/executable" 2>/dev/null || true
+      tmux kill-server 2>/dev/null || true
+      rm -f ./eval/results.xml
+      sed -i -E 's/-n[= ]*(auto|[0-9]+)/-n0/g' ./eval/run.sh 2>/dev/null || true
+      ./eval/run.sh
+    fi
+    rm -f "$runlog"
     mkdir -p "$RESULTS_ROOT/$branch"
     [ -f ./eval/results.xml ] && cp ./eval/results.xml "$RESULTS_ROOT/$branch/results.xml"
   done

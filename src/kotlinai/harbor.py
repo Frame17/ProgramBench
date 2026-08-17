@@ -97,7 +97,13 @@ def convert_instance(instance: dict, out_root: Path, *, blob_dir: Path | None = 
     for branch in active:
         _lay_down_branch(task_dir, branch, tests_out / "branches" / branch, blob_dir)
 
-    shutil.copy(HARBOR_DATA / "solve.sh", out / "solution" / "solve.sh")
+    # Pack the gold solution: the upstream build recipe (identical across
+    # branches) becomes the task's compile.sh, and solve.sh clones the real
+    # reference repo at its commit so the oracle can rebuild ./executable.
+    shutil.copy(tests_out / "branches" / active[0] / "build.sh", out / "solution" / "compile.sh")
+    (out / "solution" / "solve.sh").write_text(
+        _env.get_template("harbor_solve.sh.j2").render(repository=instance["repository"], commit=instance["commit"])
+    )
     return out
 
 

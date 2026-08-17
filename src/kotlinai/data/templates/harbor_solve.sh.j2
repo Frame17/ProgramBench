@@ -1,0 +1,29 @@
+#!/bin/bash
+# Oracle solution for a ProgramBench reverse-engineering task.
+#
+# The black-box environment ships no source, so the gold solution is
+# reconstructed from the real upstream repository: clone it at the reference
+# commit into /workspace and drop in the gold compile.sh (the upstream build
+# recipe, packed under /solution). tests/test.sh then rebuilds ./executable
+# offline and scores it — a correct oracle resolves every non-ignored test.
+set -euo pipefail
+
+WORKSPACE=/workspace
+rm -rf "$WORKSPACE"/* "$WORKSPACE"/.[!.]* 2>/dev/null || true
+git clone "https://github.com/{{ repository }}" "$WORKSPACE"
+git -C "$WORKSPACE" -c advice.detachedHead=false checkout {{ commit }}
+cd "$WORKSPACE"
+
+# Vendor dependencies now, while the solve phase still has network, so the
+# offline compile step (tests/test.sh blocks the network) can build without
+# reaching out — exactly what a submission must do to pass.
+if [ -f Cargo.toml ]; then
+  mkdir -p .cargo
+  cargo vendor --locked vendor > .cargo/config.toml 2>/dev/null || cargo vendor vendor > .cargo/config.toml
+elif [ -f go.mod ]; then
+  go mod vendor
+fi
+
+cp /solution/compile.sh "$WORKSPACE/compile.sh"
+chmod +x "$WORKSPACE/compile.sh"
+rm -f "$WORKSPACE/executable"

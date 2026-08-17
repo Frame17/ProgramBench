@@ -62,7 +62,8 @@ def compute_reward(tests_json: dict, results_dir: Path) -> dict:
         n_pass = sum(statuses.get(t) == "passed" for t in expected)
         resolved += n_pass
         total += len(expected)
-        per_branch[branch] = {"resolved": n_pass, "total": len(expected)}
+        failed = [t for t in expected if statuses.get(t) != "passed"]
+        per_branch[branch] = {"resolved": n_pass, "total": len(expected), "failed": failed}
     return {
         "reward": resolved / total if total else 0.0,
         "resolved": resolved,
@@ -80,8 +81,11 @@ def main() -> None:
 
     report = compute_reward(json.loads(args.tests_json.read_text()), args.results_dir)
     args.reward_file.parent.mkdir(parents=True, exist_ok=True)
-    args.reward_file.write_text(json.dumps(report, indent=2))
+    # Harbor's VerifierResult only accepts numeric reward values, so reward.json
+    # carries scalars only; the per-branch breakdown goes to report.json.
+    args.reward_file.write_text(json.dumps({"reward": report["reward"]}))
     (args.reward_file.parent / "reward.txt").write_text(str(report["reward"]))
+    (args.reward_file.parent / "report.json").write_text(json.dumps(report, indent=2))
     print(f"reward={report['reward']:.4f} ({report['resolved']}/{report['total']} tests)")
 
 
