@@ -30,6 +30,24 @@ CLEANROOM_TAG = "task_cleanroom_v6"
 PACKAGE_ROOT = Path(__file__).resolve().parent
 HARBOR_DATA = PACKAGE_ROOT / "data" / "harbor"
 
+# ProgramBench execution policy, mirrored onto Harbor's config.
+DOCKER_CPUS = 10
+COMPILE_TIMEOUT_SEC = 900.0
+BRANCH_TIMEOUT_SEC = 3600.0
+BUILD_TIMEOUT_SEC = 1800.0
+AGENT_TIMEOUT_SEC = 3600.0
+# The agent has no internet except the model API; parameterized per runner
+# rather than hardcoded (override with `harbor export --allowed-host`).
+# Codex is installed by Harbor during agent setup. These hosts are required by
+# nvm and npm; the model API hosts are still the only hosts needed at runtime.
+DEFAULT_AGENT_ALLOWED_HOSTS = [
+    "api.openai.com",
+    "api.anthropic.com",
+    "raw.githubusercontent.com",
+    "nodejs.org",
+    "registry.npmjs.org",
+]
+
 _env = Environment(loader=PackageLoader("kotlinai", "data/templates"), autoescape=False)
 
 
@@ -55,13 +73,21 @@ def _lay_down_branch(task_dir: Path, branch: str, dest: Path, blob_dir: Path | N
         tf.extractall(dest)
 
 
-def convert_instance(instance: dict, out_root: Path, *, blob_dir: Path | None = None) -> Path:
+def convert_instance(
+    instance: dict,
+    out_root: Path,
+    *,
+    blob_dir: Path | None = None,
+    allowed_hosts: list[str] | None = None,
+    target_language: str | None = None,
+) -> Path:
     """Write the Harbor task directory for one instance and return its path."""
     iid = instance["instance_id"]
     active = get_active_branches(instance)
     if not active:
         raise ValueError(f"{iid}: no active test branches to convert")
 
+    image_name = image_name_from_instance_id(iid)
     task_dir = TASKS_DIR / iid
     out = out_root / iid
     if out.exists():
@@ -78,18 +104,32 @@ def convert_instance(instance: dict, out_root: Path, *, blob_dir: Path | None = 
             commit=instance["commit"],
             language=instance["language"],
             difficulty=instance.get("difficulty", ""),
+            allowed_hosts=allowed_hosts or DEFAULT_AGENT_ALLOWED_HOSTS,
+            env_cpus=DOCKER_CPUS,
+            verifier_cpus=DOCKER_CPUS,
+            build_timeout=BUILD_TIMEOUT_SEC,
+            agent_timeout=AGENT_TIMEOUT_SEC,
+            # One overall budget covering the offline compile plus every branch,
+            # since the separate verifier runs them sequentially in one container.
+            verifier_timeout=COMPILE_TIMEOUT_SEC + BRANCH_TIMEOUT_SEC * len(active),
         )
     )
-    (out / "instruction.md").write_text(_env.get_template("harbor_instruction.md.j2").render())
+    (out / "instruction.md").write_text(
+        _env.get_template("harbor_instruction.md.j2").render(target_language=target_language)
+    )
     (out / "environment" / "Dockerfile").write_text(
-        _env.get_template("harbor_environment.Dockerfile.j2").render(
-            image_name=image_name_from_instance_id(iid),
-            image_tag=CLEANROOM_TAG,
-        )
+        _env.get_template("harbor_environment.Dockerfile.j2").render(image_name=image_name, image_tag=CLEANROOM_TAG)
+    )
+    # The separate verifier builds its own image from the tests/ dir (its build
+    # context); the Dockerfile there wipes /workspace and bakes /tests in.
+    (tests_out / "Dockerfile").write_text(
+        _env.get_template("harbor_verifier.Dockerfile.j2").render(image_name=image_name, image_tag=CLEANROOM_TAG)
     )
 
     shutil.copy(HARBOR_DATA / "test.sh", tests_out / "test.sh")
     shutil.copy(HARBOR_DATA / "run_verifier.py", tests_out / "run_verifier.py")
+    # Faithfully copy the official metadata — no post-export ignore convergence,
+    # which would change the benchmark score away from ProgramBench's.
     (tests_out / "tests.json").write_text(json.dumps({"branches": instance["branches"]}, indent=2, sort_keys=True))
     if instance.get("eval_clean_hashes"):
         (tests_out / "clean_hashes.txt").write_text("\n".join(instance["eval_clean_hashes"]) + "\n")
@@ -97,13 +137,18 @@ def convert_instance(instance: dict, out_root: Path, *, blob_dir: Path | None = 
     for branch in active:
         _lay_down_branch(task_dir, branch, tests_out / "branches" / branch, blob_dir)
 
-    # Pack the gold solution: the upstream build recipe (identical across
-    # branches) becomes the task's compile.sh, and solve.sh clones the real
-    # reference repo at its commit so the oracle can rebuild ./executable.
-    shutil.copy(tests_out / "branches" / active[0] / "build.sh", out / "solution" / "compile.sh")
-    (out / "solution" / "solve.sh").write_text(
-        _env.get_template("harbor_solve.sh.j2").render(repository=instance["repository"], commit=instance["commit"])
-    )
+    # The oracle assumes every active branch was built the same way. Fail loudly
+    # if they disagree (e.g. canop__broot.d6c798e ships divergent build.sh, one
+    # of which never creates ./executable) rather than silently picking one.
+    build_scripts = {(tests_out / "branches" / b / "build.sh").read_text() for b in active}
+    if len(build_scripts) != 1:
+        raise ValueError(f"{iid}: active branches disagree on build.sh ({len(build_scripts)} distinct recipes)")
+
+    # Pack the gold solution: a network-free, language-agnostic oracle. solve.sh
+    # stashes the reference binary from the canonical /workspace/executable path
+    # (readable as root); oracle_compile.sh restores it as ./executable offline.
+    shutil.copy(HARBOR_DATA / "oracle_compile.sh", out / "solution" / "compile.sh")
+    (out / "solution" / "solve.sh").write_text(_env.get_template("harbor_solve.sh.j2").render())
     return out
 
 
@@ -113,6 +158,8 @@ def convert_all(
     instance_ids: list[str] | None = None,
     filter_spec: str = "",
     slice_spec: str = "",
+    allowed_hosts: list[str] | None = None,
+    target_language: str | None = None,
 ) -> list[Path]:
     """Convert selected instances into Harbor tasks under ``out_root``."""
     from programbench.utils.instance_filters import filter_instances
@@ -125,4 +172,6 @@ def convert_all(
         if missing:
             raise ValueError(f"Unknown instance_id(s): {sorted(missing)}")
     instances = filter_instances(instances, filter_spec=filter_spec, slice_spec=slice_spec, has_test_branch=True)
-    return [convert_instance(i, out_root) for i in instances]
+    return [
+        convert_instance(i, out_root, allowed_hosts=allowed_hosts, target_language=target_language) for i in instances
+    ]

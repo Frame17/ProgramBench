@@ -7,7 +7,9 @@ program's source code has been removed — you only have the black-box binary.
 
 Your job is to re-implement the program from scratch so that your build
 reproduces its observable behavior.
-
+{% if target_language %}
+You MUST implement the deliverable in {{ target_language }}. Write all source code in {{ target_language }}. Do not reimplement the program in another language.
+{% endif %}
 ## What to deliver
 
 Work inside `/workspace`. When you are done, that directory must contain:

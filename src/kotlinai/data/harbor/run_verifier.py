@@ -56,14 +56,21 @@ def compute_reward(tests_json: dict, results_dir: Path) -> dict:
         if info.get("ignored"):
             continue
         ignored = {t["name"] for t in info.get("ignored_tests") or []}
+        declared = set(info.get("tests", []))
         expected = [t for t in info.get("tests", []) if t not in ignored]
         xml = results_dir / branch / "results.xml"
         statuses = parse_statuses(xml.read_text()) if xml.exists() else {}
-        n_pass = sum(statuses.get(t) == "passed" for t in expected)
+        # Parity with ProgramBench (eval.py:_process_branch_xml): JUnit cases not
+        # declared in tests.json (and not ignored) stay in the EvaluationResult,
+        # so they count toward both resolved and total. One expected-pass plus
+        # one unexpected-fail is 1/2, not 1/1.
+        unexpected = sorted(n for n in statuses if n not in declared and n not in ignored)
+        scored = expected + unexpected
+        n_pass = sum(statuses.get(t) == "passed" for t in scored)
         resolved += n_pass
-        total += len(expected)
-        failed = [t for t in expected if statuses.get(t) != "passed"]
-        per_branch[branch] = {"resolved": n_pass, "total": len(expected), "failed": failed}
+        total += len(scored)
+        failed = [t for t in scored if statuses.get(t) != "passed"]
+        per_branch[branch] = {"resolved": n_pass, "total": len(scored), "failed": failed}
     return {
         "reward": resolved / total if total else 0.0,
         "resolved": resolved,

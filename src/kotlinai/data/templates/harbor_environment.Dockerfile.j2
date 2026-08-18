@@ -1,2 +1,10 @@
 FROM {{ image_name }}:{{ image_tag }}
+
+# The cleanroom image pins Ubuntu to a historical snapshot. Keep the agent
+# bootstrap independent of that snapshot and provide its required system tool.
+RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspace
