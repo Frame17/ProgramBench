@@ -58,22 +58,27 @@ def _lay_down_branch(task_dir: Path, branch: str, dest: Path, blob_dir: Path | N
     """Copy one branch's ``eval/`` test tree into ``dest``.
 
     Prefers an already-extracted tree in the task dir (the local fixture);
-    otherwise extracts the HuggingFace blob ``tests/<branch>.tar.gz``.
+    otherwise extracts the HuggingFace blob ``tests/<branch>.tar.gz``. A
+    task-level build script is used when the branch does not provide one.
     """
     on_disk = task_dir / "tests" / branch
     if on_disk.is_dir():
         shutil.copytree(on_disk, dest)
-        return
-    if blob_dir is None:
-        from programbench.utils.blob_store import get_blob_dir
+    else:
+        if blob_dir is None:
+            from programbench.utils.blob_store import get_blob_dir
 
-        blob_dir = get_blob_dir(task_dir.name)
-    tar = blob_dir / "tests" / f"{branch}.tar.gz" if blob_dir else None
-    if tar is None or not tar.exists():
-        raise FileNotFoundError(f"No test tree for {task_dir.name}/{branch} (looked in {on_disk} and blob {tar})")
-    dest.mkdir(parents=True)
-    with tarfile.open(tar) as tf:
-        tf.extractall(dest)
+            blob_dir = get_blob_dir(task_dir.name)
+        tar = blob_dir / "tests" / f"{branch}.tar.gz" if blob_dir else None
+        if tar is None or not tar.exists():
+            raise FileNotFoundError(f"No test tree for {task_dir.name}/{branch} (looked in {on_disk} and blob {tar})")
+        dest.mkdir(parents=True)
+        with tarfile.open(tar) as tf:
+            tf.extractall(dest)
+
+    build_script = task_dir / "build.sh"
+    if not (dest / "build.sh").exists() and build_script.is_file():
+        shutil.copy(build_script, dest / "build.sh")
 
 
 def convert_instance(
