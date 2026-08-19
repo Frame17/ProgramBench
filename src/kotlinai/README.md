@@ -6,10 +6,12 @@ solution** so Harbor's oracle agent can verify the task end to end.
 
 One ProgramBench instance maps to one Harbor task. The environment is the
 black-box `task_cleanroom_v6` image (reference binary installed, source
-removed). The agent works offline (only the model API is reachable); a
-**separate** verifier container then rebuilds the submission's `compile.sh`
-with no network and runs every active behavioral branch against it, reporting
-the fractional pass rate.
+removed). Kotlin exports add OpenJDK 21 and the Kotlin 2.4.10 compiler to both
+the agent and separate verifier images; Java exports add OpenJDK 21. The agent
+can therefore build and test without spending benchmark time installing its
+toolchain. The verifier rebuilds the submission's `compile.sh` with no network
+and runs every active behavioral branch against it, reporting the fractional
+pass rate.
 
 ## Layout
 
@@ -44,6 +46,33 @@ uv run programbench harbor export ./out --target-language Kotlin <id>
 # Restrict the agent's network allowlist to a specific model API host
 uv run programbench harbor export ./out <id> --allowed-host api.openai.com
 ```
+
+## Language comparison experiment
+
+`scripts/language_comparison/run_language_comparison.sh` reads the languages,
+task parallelism, agent, task list, and shared Harbor options from the adjacent
+`config.yaml`. It exports a separate task set for each configured language, runs
+all language-task trials in one Harbor job, and writes Markdown and JSON
+comparisons of reward, cost, agent steps, and tokens.
+
+```bash
+./scripts/language_comparison/run_language_comparison.sh
+./scripts/language_comparison/run_language_comparison.sh \
+  --output-dir experiments/miniserve-comparison
+./scripts/language_comparison/run_language_comparison.sh \
+  --config path/to/comparison-config.yaml
+
+# Rebuild reports from existing Harbor results without running agents
+./scripts/language_comparison/run_language_comparison.sh \
+  --output-dir experiments/miniserve-comparison --report-only
+```
+
+The config must contain exactly two languages, one agent, positive parallelism,
+and an explicit `tasks.task_names` list. `parallelism` controls concurrent trials
+globally across both languages. Report deltas are the second language minus the
+first.
+Each experiment keeps its generated tasks, derived configs, Harbor jobs,
+`manifest.json`, `report.md`, and `report.json` under its output directory.
 
 Each instance produces a standard Harbor task directory:
 
@@ -104,7 +133,8 @@ if the JUnit XML marks it passed (absent counts as unresolved). It writes:
 - The task's cleanroom image (`docker pull programbench/<mangled_id>:task_cleanroom_v6`).
 - A `dynamic_network_policy` environment backend (Docker/OrbStack on Linux with
   nftables) so the agent-phase network allowlist override is accepted. The
-  entire task — agent, oracle, and verifier — runs without public internet.
+  agent, oracle, and offline compilation run without public internet. Harbor
+  still needs network access while building the task images.
 
 ```bash
 harbor trials start --path ./out/<instance_id> --agent oracle

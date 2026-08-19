@@ -36,10 +36,13 @@ COMPILE_TIMEOUT_SEC = 900.0
 BRANCH_TIMEOUT_SEC = 3600.0
 BUILD_TIMEOUT_SEC = 1800.0
 AGENT_TIMEOUT_SEC = 3600.0
+KOTLIN_VERSION = "2.4.10"
+KOTLIN_COMPILER_SHA256 = "473dd66c7a3ef4b182065b3da670466c1bf2773a9dbb0ed8b33a39fe9d4f876d"
 # The agent has no internet except the model API; parameterized per runner
-# rather than hardcoded (override with `harbor export --allowed-host`).
-# Codex is installed by Harbor during agent setup. These hosts are required by
-# nvm and npm; the model API hosts are still the only hosts needed at runtime.
+# rather than hardcoded (override with `harbor export --allowed-host`). Codex is
+# installed by Harbor during setup; these hosts support that installation.
+# Language toolchains are installed while Harbor builds the task images, before
+# the restricted agent phase begins.
 DEFAULT_AGENT_ALLOWED_HOSTS = [
     "api.openai.com",
     "api.anthropic.com",
@@ -88,6 +91,9 @@ def convert_instance(
         raise ValueError(f"{iid}: no active test branches to convert")
 
     image_name = image_name_from_instance_id(iid)
+    normalized_target_language = (target_language or "").strip().lower()
+    install_jdk = normalized_target_language in {"java", "kotlin"}
+    install_kotlin = normalized_target_language == "kotlin"
     task_dir = TASKS_DIR / iid
     out = out_root / iid
     if out.exists():
@@ -118,12 +124,26 @@ def convert_instance(
         _env.get_template("harbor_instruction.md.j2").render(target_language=target_language)
     )
     (out / "environment" / "Dockerfile").write_text(
-        _env.get_template("harbor_environment.Dockerfile.j2").render(image_name=image_name, image_tag=CLEANROOM_TAG)
+        _env.get_template("harbor_environment.Dockerfile.j2").render(
+            image_name=image_name,
+            image_tag=CLEANROOM_TAG,
+            install_jdk=install_jdk,
+            install_kotlin=install_kotlin,
+            kotlin_version=KOTLIN_VERSION,
+            kotlin_compiler_sha256=KOTLIN_COMPILER_SHA256,
+        )
     )
     # The separate verifier builds its own image from the tests/ dir (its build
     # context); the Dockerfile there wipes /workspace and bakes /tests in.
     (tests_out / "Dockerfile").write_text(
-        _env.get_template("harbor_verifier.Dockerfile.j2").render(image_name=image_name, image_tag=CLEANROOM_TAG)
+        _env.get_template("harbor_verifier.Dockerfile.j2").render(
+            image_name=image_name,
+            image_tag=CLEANROOM_TAG,
+            install_jdk=install_jdk,
+            install_kotlin=install_kotlin,
+            kotlin_version=KOTLIN_VERSION,
+            kotlin_compiler_sha256=KOTLIN_COMPILER_SHA256,
+        )
     )
 
     shutil.copy(HARBOR_DATA / "test.sh", tests_out / "test.sh")

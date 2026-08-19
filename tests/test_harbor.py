@@ -79,6 +79,49 @@ def test_convert_instance_instructs_agent_to_use_target_language(tmp_path):
     assert "Do not reimplement the program in another language." in instruction
 
 
+def test_convert_instance_adds_kotlin_toolchain_to_agent_and_verifier(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language=" Kotlin ")
+
+    for dockerfile in [out / "environment" / "Dockerfile", out / "tests" / "Dockerfile"]:
+        contents = dockerfile.read_text()
+        assert "openjdk-21-jdk-headless" in contents
+        assert f"kotlin-compiler-{harbor.KOTLIN_VERSION}.zip" in contents
+        assert harbor.KOTLIN_COMPILER_SHA256 in contents
+        assert "ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" in contents
+        assert "ENV KOTLIN_HOME=/opt/kotlinc" in contents
+        assert 'ENV PATH="${KOTLIN_HOME}/bin:${PATH}"' in contents
+        assert "apt-get update" in contents
+
+
+def test_convert_instance_adds_only_jdk_for_java_target(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language=" Java ")
+
+    for dockerfile in [out / "environment" / "Dockerfile", out / "tests" / "Dockerfile"]:
+        contents = dockerfile.read_text()
+        assert "openjdk-21-jdk-headless" in contents
+        assert "ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" in contents
+        assert "kotlin-compiler" not in contents
+        assert "KOTLIN_HOME" not in contents
+
+
+def test_convert_instance_does_not_add_jvm_toolchain_for_other_targets(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language="Rust")
+
+    for dockerfile in [out / "environment" / "Dockerfile", out / "tests" / "Dockerfile"]:
+        contents = dockerfile.read_text()
+        assert "openjdk-21-jdk-headless" not in contents
+        assert "kotlin-compiler" not in contents
+
+
+def test_default_agent_allowlist_does_not_expose_toolchain_hosts(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
+    allowed_hosts = tomllib.loads((out / "task.toml").read_text())["agent"]["allowed_hosts"]
+
+    assert "archive.ubuntu.com" not in allowed_hosts
+    assert "repo.maven.apache.org" not in allowed_hosts
+    assert "services.gradle.org" not in allowed_hosts
+
+
 def test_convert_instance_task_toml_enforces_programbench_policy(tmp_path):
     out = convert_instance(_calc_instance(), tmp_path, allowed_hosts=["api.example.com"])
     cfg = tomllib.loads((out / "task.toml").read_text())

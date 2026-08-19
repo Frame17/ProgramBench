@@ -1,10 +1,34 @@
 FROM {{ image_name }}:{{ image_tag }}
 
 # The cleanroom image pins Ubuntu to a historical snapshot. Keep the agent
-# bootstrap independent of that snapshot and provide its required system tool.
+# bootstrap independent of that snapshot and provide its required system tools.
+{% if install_kotlin %}
+RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl openjdk-21-jdk-headless ripgrep unzip \
+    && curl -fsSLo /tmp/kotlin-compiler.zip \
+        "https://github.com/JetBrains/kotlin/releases/download/v{{ kotlin_version }}/kotlin-compiler-{{ kotlin_version }}.zip" \
+    && echo "{{ kotlin_compiler_sha256 }}  /tmp/kotlin-compiler.zip" | sha256sum -c - \
+    && unzip -q /tmp/kotlin-compiler.zip -d /opt \
+    && rm -f /tmp/kotlin-compiler.zip \
+    && rm -rf /var/lib/apt/lists/*
+{% elif install_jdk %}
+RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends openjdk-21-jdk-headless ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+{% else %}
 RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends ripgrep \
     && rm -rf /var/lib/apt/lists/*
+{% endif %}
+{% if install_jdk %}
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+{% endif %}
+{% if install_kotlin %}
+ENV KOTLIN_HOME=/opt/kotlinc
+ENV PATH="${KOTLIN_HOME}/bin:${PATH}"
+{% endif %}
 
 WORKDIR /workspace

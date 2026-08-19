@@ -10,7 +10,7 @@ import typer
 
 app = typer.Typer(
     name="harbor",
-    help="Export tasks into the Harbor task format (harborframework.com).",
+    help="Export and compare tasks in the Harbor task format (harborframework.com).",
     no_args_is_help=True,
     add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
@@ -46,3 +46,53 @@ def export(
     for p in paths:
         typer.echo(p)
     typer.echo(f"Exported {len(paths)} Harbor task(s) to {out_dir}")
+
+
+@app.command()
+def compare(
+    config: Path = typer.Option(
+        Path("scripts/language_comparison/config.yaml"),
+        "--config",
+        help="Comparison config containing languages, parallelism, agent, tasks, and shared Harbor options.",
+    ),
+    output_dir: Path | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Experiment directory; defaults to experiments/<UTC timestamp>.",
+    ),
+    runner: Path = typer.Option(
+        Path("scripts/run_agent.sh"),
+        "--runner",
+        help="Path to run_agent.sh.",
+    ),
+    report_only: bool = typer.Option(
+        False,
+        "--report-only",
+        help="Regenerate report.md and report.json from an existing experiment.",
+    ),
+) -> None:
+    """Run the same ProgramBench tasks in two languages and compare them."""
+    from kotlinai.experiment import (
+        ComparisonError,
+        default_experiment_dir,
+        run_comparison_experiment,
+        write_comparison_reports,
+    )
+
+    try:
+        if report_only:
+            if output_dir is None:
+                raise ComparisonError("--output-dir is required with --report-only")
+            markdown_path, json_path = write_comparison_reports(output_dir)
+            typer.echo(markdown_path)
+            typer.echo(json_path)
+            return
+
+        target_dir = output_dir or default_experiment_dir()
+        exit_code = run_comparison_experiment(config, target_dir, runner)
+        typer.echo(target_dir.resolve() / "report.md")
+        typer.echo(target_dir.resolve() / "report.json")
+        if exit_code:
+            raise typer.Exit(exit_code)
+    except ComparisonError as exc:
+        raise typer.BadParameter(str(exc)) from exc

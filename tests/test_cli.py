@@ -39,6 +39,13 @@ def test_blob_sync_help():
     assert "instance" in result.output.lower()
 
 
+def test_harbor_compare_help():
+    result = runner.invoke(app, ["harbor", "compare", "--help"])
+    assert result.exit_code == 0
+    assert "output-dir" in result.output.lower()
+    assert "report-only" in result.output.lower()
+
+
 def test_submit_help():
     result = runner.invoke(app, ["submit", "--help"])
     assert result.exit_code == 0
