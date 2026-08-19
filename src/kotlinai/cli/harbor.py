@@ -7,6 +7,7 @@
 from pathlib import Path
 
 import typer
+import yaml
 
 app = typer.Typer(
     name="harbor",
@@ -46,6 +47,48 @@ def export(
     for p in paths:
         typer.echo(p)
     typer.echo(f"Exported {len(paths)} Harbor task(s) to {out_dir}")
+
+
+@app.command("export-config")
+def export_config(
+    config: Path = typer.Argument(..., help="Harbor job config containing target_language and datasets."),
+) -> None:
+    """Export the task datasets selected by a Harbor job config."""
+    from kotlinai.harbor import convert_all
+
+    data = yaml.safe_load(config.read_text())
+    if not isinstance(data, dict):
+        raise typer.BadParameter("Harbor config must contain a YAML object")
+
+    target_language = data.get("target_language")
+    if not isinstance(target_language, str) or not target_language.strip():
+        raise typer.BadParameter("Harbor config must define a non-empty target_language")
+
+    datasets = data.get("datasets")
+    if not isinstance(datasets, list) or not datasets:
+        raise typer.BadParameter("Harbor config must define at least one dataset")
+
+    total = 0
+    for dataset in datasets:
+        if not isinstance(dataset, dict):
+            raise typer.BadParameter("Each Harbor dataset must be an object")
+        out_dir = dataset.get("path")
+        task_names = dataset.get("task_names")
+        if not isinstance(out_dir, str) or not out_dir.strip():
+            raise typer.BadParameter("Each Harbor dataset must define a non-empty path")
+        if task_names is not None and (
+            not isinstance(task_names, list)
+            or not task_names
+            or not all(isinstance(name, str) and name for name in task_names)
+        ):
+            raise typer.BadParameter("Harbor dataset task_names must be a non-empty list of strings")
+
+        paths = convert_all(Path(out_dir), instance_ids=task_names or None, target_language=target_language)
+        total += len(paths)
+        for path in paths:
+            typer.echo(path)
+
+    typer.echo(f"Exported {total} Harbor task(s) from {config}")
 
 
 @app.command()

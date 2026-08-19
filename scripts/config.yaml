@@ -1,7 +1,7 @@
 # Harbor job configuration, passed straight to `harbor run --config`
 # (schema: harbor.models.job.config:JobConfig).
 # Change target_language to require a different implementation language
-# (used by `programbench harbor export`, run separately before this).
+# (used by the runner's initial `programbench harbor export-config` step).
 
 target_language: Kotlin
 #target_language: Java

@@ -173,6 +173,7 @@ def _config_digest(path: Path) -> str:
 def _run_agent(runner: Path, config_path: Path, *, cwd: Path) -> int:
     env = os.environ.copy()
     env["HARBOR_CONFIG"] = str(config_path.resolve())
+    env["HARBOR_SKIP_EXPORT"] = "1"
     return subprocess.run([str(runner.resolve())], cwd=cwd, env=env, check=False).returncode
 
 

@@ -11,9 +11,14 @@ export OPENAI_BASE_URL="$LITELLM_BASE_URL"
 
 LITELLM_BASE_HOST="${LITELLM_BASE_URL#*://}"
 LITELLM_BASE_HOST="${LITELLM_BASE_HOST%%/*}"
+CONFIG="${HARBOR_CONFIG:-$ROOT/scripts/config.yaml}"
+
+if [[ "${HARBOR_SKIP_EXPORT:-0}" != "1" ]]; then
+  uv run programbench harbor export-config "$CONFIG"
+fi
 
 exec harbor run \
-  --config "${HARBOR_CONFIG:-$ROOT/scripts/config.yaml}" \
+  --config "$CONFIG" \
   --agent-kwarg "api_base=$LITELLM_BASE_URL" \
   --allow-agent-host "$LITELLM_BASE_HOST" \
   --env-file "$ROOT/.env" \
