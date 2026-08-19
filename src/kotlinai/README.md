@@ -144,6 +144,4 @@ harbor trials start --path ./out/<instance_id> --agent oracle
 
 A literal 100% oracle pass is not reachable for every task in a single-container
 Harbor run — some tests fail on the true reference binary itself in the sandbox
-(missing OS facilities, TUI hangs, snapshot date-drift). See
-[`status.md`](status.md) for the analysis and why those must be fixed in the
-source dataset rather than by editing exported tasks.
+(missing OS facilities, TUI hangs, snapshot date-drift).
