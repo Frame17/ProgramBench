@@ -1,0 +1,34 @@
+#!/bin/bash
+# Oracle solution for a ProgramBench reverse-engineering task.
+#
+# The black-box environment ships a working reference build at the canonical
+# path the tests target — /workspace/executable — execute-only so a non-root
+# agent cannot read its bytes. The oracle runs as root, so it can: it copies the
+# reference into a base64 stash under /workspace and ships an offline compile.sh
+# that decodes it. The stash and compile.sh are handed off to the separate
+# verifier as /workspace artifacts (the raw ./executable is excluded from the
+# handoff); base64 changes the bytes' hash, so the stash also survives the
+# verifier's clean-hash scrub, and ./executable is decoded only afterwards.
+#
+# (eval_clean_hashes is NOT the installed reference's hash — it is a gold-build
+# hash from a different toolchain — so the reference cannot be located by it;
+# the canonical /workspace/executable path is the reliable, language-agnostic
+# source, matching conftest.py's EXECUTABLE = REPO_ROOT / "executable".)
+set -euo pipefail
+
+WORKSPACE=/workspace
+REFERENCE="$WORKSPACE/executable"
+STASH="$WORKSPACE/.programbench_oracle_reference"
+
+if [ ! -x "$REFERENCE" ]; then
+  echo "FATAL: no reference binary at $REFERENCE to stash" >&2
+  exit 1
+fi
+if ! base64 "$REFERENCE" > "$STASH" 2>/dev/null; then
+  echo "FATAL: cannot read the reference binary (need root to read the execute-only $REFERENCE)" >&2
+  exit 1
+fi
+
+cp /solution/compile.sh "$WORKSPACE/compile.sh"
+chmod +x "$WORKSPACE/compile.sh"
+rm -f "$REFERENCE"

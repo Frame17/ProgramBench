@@ -6,6 +6,7 @@
 
 """Smoke tests for CLI subcommands."""
 
+import yaml
 from typer.testing import CliRunner
 
 from programbench.cli.main import app
@@ -37,6 +38,37 @@ def test_blob_sync_help():
     result = runner.invoke(app, ["blob", "sync", "--help"])
     assert result.exit_code == 0
     assert "instance" in result.output.lower()
+
+
+def test_harbor_compare_help():
+    result = runner.invoke(app, ["harbor", "compare", "--help"])
+    assert result.exit_code == 0
+    assert "output-dir" in result.output.lower()
+    assert "report-only" in result.output.lower()
+
+
+def test_harbor_export_config_uses_job_dataset(tmp_path, monkeypatch):
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "target_language": "Kotlin",
+                "datasets": [{"path": str(tmp_path / "tasks"), "task_names": ["task-a", "task-b"]}],
+            }
+        )
+    )
+    calls = []
+
+    def fake_convert(out_dir, *, instance_ids, target_language):
+        calls.append((out_dir, instance_ids, target_language))
+        return [out_dir / instance_id for instance_id in instance_ids]
+
+    monkeypatch.setattr("kotlinai.harbor.convert_all", fake_convert)
+    result = runner.invoke(app, ["harbor", "export-config", str(config)])
+
+    assert result.exit_code == 0
+    assert calls == [(tmp_path / "tasks", ["task-a", "task-b"], "Kotlin")]
+    assert "Exported 2 Harbor task(s)" in result.output
 
 
 def test_submit_help():

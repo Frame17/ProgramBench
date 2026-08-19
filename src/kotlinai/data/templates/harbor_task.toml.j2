@@ -1,0 +1,45 @@
+version = "1.0"
+# Hand the agent's workspace to the separate verifier, excluding any prebuilt
+# ./executable so the offline build must reproduce it (matches ProgramBench's
+# submission archive, which the evaluator wipes ./executable from before compile).
+artifacts = [{ source = "/workspace", exclude = ["executable"] }]
+
+[metadata]
+author_name = "ProgramBench"
+category = "{{ language }}"
+tags = ["programbench", "reverse-engineering", "{{ language }}"]
+instance_id = "{{ instance_id }}"
+upstream_repository = "{{ repository }}"
+upstream_commit = "{{ commit }}"
+{% if difficulty %}difficulty_explanation = "{{ difficulty }}"
+{% endif %}solution_explanation = "The reference source is intentionally removed; the agent must reverse-engineer the installed black-box binary and ship a compile.sh that rebuilds it offline."
+verification_explanation = "A separate verifier container (built from the cleanroom image with /workspace wiped) receives the agent's /workspace as an artifact minus ./executable, rebuilds ./executable from compile.sh with no network, then runs each active test branch's behavioral suite against it. Reward is the fraction of non-ignored tests that pass."
+
+# No network during inference: the agent must reverse-engineer the binary, not
+# fetch upstream source. The agent phase overrides the baseline to an
+# LLM-API-only allowlist (requires a dynamic_network_policy environment backend,
+# e.g. Docker/OrbStack on Linux with nftables).
+[environment]
+build_timeout_sec = {{ build_timeout }}
+cpus = {{ env_cpus }}
+network_mode = "public"
+
+[agent]
+timeout_sec = {{ agent_timeout }}
+network_mode = "allowlist"
+allowed_hosts = {{ allowed_hosts | tojson }}
+
+# The verifier runs in its OWN container (not the agent-modified one),
+# reproducing ProgramBench's fresh-container submission boundary. It keeps
+# network (some test suites pip-install plugins or reach the network, and
+# ProgramBench leaves test-execution containers online); test.sh blocks the
+# network only around compile.sh so the build itself can't smuggle downloads.
+[verifier]
+timeout_sec = {{ verifier_timeout }}
+environment_mode = "separate"
+env = { PYTEST_ADDOPTS = "--max-worker-restart=4", PYTEST_XDIST_AUTO_NUM_WORKERS = "{{ verifier_cpus }}" }
+
+[verifier.environment]
+build_timeout_sec = {{ build_timeout }}
+cpus = {{ verifier_cpus }}
+network_mode = "public"

@@ -1,0 +1,37 @@
+FROM {{ image_name }}:{{ image_tag }}
+{% if install_kotlin %}
+# compile.sh runs here with network blocked, so the JDK required by bundled
+# Kotlin tooling and the compiler itself must be available in the verifier image.
+RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl openjdk-21-jdk-headless unzip \
+    && curl -fsSLo /tmp/kotlin-compiler.zip \
+        "https://github.com/JetBrains/kotlin/releases/download/v{{ kotlin_version }}/kotlin-compiler-{{ kotlin_version }}.zip" \
+    && echo "{{ kotlin_compiler_sha256 }}  /tmp/kotlin-compiler.zip" | sha256sum -c - \
+    && unzip -q /tmp/kotlin-compiler.zip -d /opt \
+    && rm -f /tmp/kotlin-compiler.zip \
+    && rm -rf /var/lib/apt/lists/*
+{% elif install_jdk %}
+# Java submissions also rebuild offline in this image.
+RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends openjdk-21-jdk-headless \
+    && rm -rf /var/lib/apt/lists/*
+{% endif %}
+{% if install_jdk %}
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+{% endif %}
+{% if install_kotlin %}
+ENV KOTLIN_HOME=/opt/kotlinc
+ENV PATH="${KOTLIN_HOME}/bin:${PATH}"
+{% endif %}
+# The separate verifier must not inherit anything the agent left behind: wipe
+# /workspace at build time. Harbor then restores only the handed-off artifacts
+# (the agent's /workspace minus ./executable) on top before test.sh runs.
+RUN rm -rf /workspace && mkdir -p /workspace
+WORKDIR /workspace
+# In separate-verifier mode Harbor does not upload the tests dir (the verifier
+# runs with skip_tests_upload=True), so the image must own /tests: bake in
+# test.sh, run_verifier.py, tests.json, clean_hashes.txt and the branch trees
+# from the build context (which is this tests/ directory).
+COPY . /tests
