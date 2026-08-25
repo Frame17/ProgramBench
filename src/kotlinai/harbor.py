@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import shutil
 import tarfile
+from collections.abc import Callable
 from pathlib import Path
 
 from jinja2 import Environment, PackageLoader
@@ -185,8 +186,14 @@ def convert_all(
     slice_spec: str = "",
     allowed_hosts: list[str] | None = None,
     target_language: str | None = None,
+    on_error: Callable[[str, Exception], None] | None = None,
 ) -> list[Path]:
-    """Convert selected instances into Harbor tasks under ``out_root``."""
+    """Convert selected instances into Harbor tasks under ``out_root``.
+
+    When ``on_error`` is supplied, a failure converting one instance is reported
+    through it and that instance is skipped so the remaining ones still convert;
+    otherwise the first failure aborts the whole batch (the strict default).
+    """
     from programbench.utils.instance_filters import filter_instances
 
     instances = load_all_instances()
@@ -197,6 +204,14 @@ def convert_all(
         if missing:
             raise ValueError(f"Unknown instance_id(s): {sorted(missing)}")
     instances = filter_instances(instances, filter_spec=filter_spec, slice_spec=slice_spec, has_test_branch=True)
-    return [
-        convert_instance(i, out_root, allowed_hosts=allowed_hosts, target_language=target_language) for i in instances
-    ]
+    paths: list[Path] = []
+    for instance in instances:
+        try:
+            paths.append(
+                convert_instance(instance, out_root, allowed_hosts=allowed_hosts, target_language=target_language)
+            )
+        except Exception as exc:
+            if on_error is None:
+                raise
+            on_error(instance["instance_id"], exc)
+    return paths

@@ -229,3 +229,70 @@ def test_divergent_build_scripts_raise(tmp_path, monkeypatch):
     }
     with pytest.raises(ValueError, match="disagree on build.sh"):
         convert_instance(instance, tmp_path / "out")
+
+
+def test_missing_branch_build_sh_backfilled_from_task_level(tmp_path, monkeypatch):
+    tasks = tmp_path / "tasks"
+    iid = "org__tool.deadbeef"
+    # One branch ships a build.sh; the other lacks one (like mdbook's c8cbe415e02d).
+    _fake_branch(tasks / iid, "aaaaaaaaaaaa", "shared recipe\n")
+    no_build = tasks / iid / "tests" / "bbbbbbbbbbbb" / "eval" / "tests"
+    no_build.mkdir(parents=True)
+    (tasks / iid / "tests" / "bbbbbbbbbbbb" / "eval" / "run.sh").write_text("#!/bin/bash\n")
+    (no_build / "test_x.py").write_text("")
+    # Task-level fallback recipe, byte-identical to the branch that ships one.
+    (tasks / iid / "build.sh").write_text("shared recipe\n")
+    monkeypatch.setattr(harbor, "TASKS_DIR", tasks)
+    instance = {
+        "instance_id": iid,
+        "repository": "org/tool",
+        "commit": "deadbeef",
+        "language": "rust",
+        "branches": {
+            "aaaaaaaaaaaa": {"ignored": False, "tests": [], "ignored_tests": []},
+            "bbbbbbbbbbbb": {"ignored": False, "tests": [], "ignored_tests": []},
+        },
+    }
+
+    out = convert_instance(instance, tmp_path / "out")
+
+    # The branch without a build.sh is backfilled from the task-level recipe, so
+    # all active branches agree and the divergence check passes.
+    backfilled = out / "tests" / "branches" / "bbbbbbbbbbbb" / "build.sh"
+    assert backfilled.read_text() == "shared recipe\n"
+
+
+def test_convert_all_skips_failing_instance(tmp_path, monkeypatch):
+    good = {"instance_id": "org__good.1111111", "branches": {"aaaaaaaaaaaa": {"ignored": False}}}
+    bad = {"instance_id": "org__bad.2222222", "branches": {"bbbbbbbbbbbb": {"ignored": False}}}
+    monkeypatch.setattr(harbor, "load_all_instances", lambda: [good, bad])
+
+    def fake_convert(instance, out_root, **kwargs):
+        if instance["instance_id"] == bad["instance_id"]:
+            raise ValueError("boom")
+        path = out_root / instance["instance_id"]
+        path.mkdir(parents=True)
+        return path
+
+    monkeypatch.setattr(harbor, "convert_instance", fake_convert)
+
+    errors: list[tuple[str, Exception]] = []
+    paths = harbor.convert_all(tmp_path / "out", on_error=lambda iid, exc: errors.append((iid, exc)))
+
+    # The good instance is still exported; the bad one is skipped and reported.
+    assert [p.name for p in paths] == ["org__good.1111111"]
+    assert [iid for iid, _ in errors] == ["org__bad.2222222"]
+
+
+def test_convert_all_reraises_without_error_handler(tmp_path, monkeypatch):
+    bad = {"instance_id": "org__bad.2222222", "branches": {"bbbbbbbbbbbb": {"ignored": False}}}
+    monkeypatch.setattr(harbor, "load_all_instances", lambda: [bad])
+
+    def fake_convert(instance, out_root, **kwargs):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(harbor, "convert_instance", fake_convert)
+
+    # Without on_error the batch stays fail-fast (experiment.py relies on this).
+    with pytest.raises(ValueError, match="boom"):
+        harbor.convert_all(tmp_path / "out")

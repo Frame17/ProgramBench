@@ -6,7 +6,7 @@
 target_language: Kotlin
 #target_language: Java
 
-n_concurrent_trials: 2
+n_concurrent_trials: 8
 agents:
   - name: codex
     model_name: openai/gpt-5.6-luna
@@ -16,6 +16,15 @@ datasets:
 #      - ammarabouzor__tui-journal.2b4540d
 #      - jesseduffield__lazygit.1d0db51
 
-#      - nikolassv__bartib.6b9b5ce
-#      - svenstaro__genact.16f96e3
+      - nikolassv__bartib.6b9b5ce
+      - svenstaro__genact.16f96e3
       - svenstaro__miniserve.8449e8b
+      - johanneskaufmann__html-to-markdown.3006818
+      - sibprogrammer__xq.b89f681
+      - kaushiksrini__parqeye.8072121
+      - noborus__trdsql.d8c5ff6
+      - rochacbruno__marmite.7d4bc2d
+      - raviqqe__muffet.a882908
+      - ducaale__xh.4a6e44f
+      - tomnomnom__gron.88a6234
+      - rust-lang__mdbook.37273ba

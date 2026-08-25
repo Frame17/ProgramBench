@@ -59,7 +59,7 @@ def test_harbor_export_config_uses_job_dataset(tmp_path, monkeypatch):
     )
     calls = []
 
-    def fake_convert(out_dir, *, instance_ids, target_language):
+    def fake_convert(out_dir, *, instance_ids, target_language, on_error=None):
         calls.append((out_dir, instance_ids, target_language))
         return [out_dir / instance_id for instance_id in instance_ids]
 

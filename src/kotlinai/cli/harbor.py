@@ -36,6 +36,12 @@ def export(
     """Convert ProgramBench instances into Harbor tasks under OUT_DIR."""
     from kotlinai.harbor import convert_all
 
+    failures: list[tuple[str, Exception]] = []
+
+    def _skip(instance_id: str, exc: Exception) -> None:
+        typer.echo(f"WARNING: skipping {instance_id}: {type(exc).__name__}: {exc}", err=True)
+        failures.append((instance_id, exc))
+
     paths = convert_all(
         out_dir,
         instance_ids=instances or None,
@@ -43,10 +49,14 @@ def export(
         slice_spec=slice_spec,
         allowed_hosts=allowed_host or None,
         target_language=target_language,
+        on_error=_skip,
     )
     for p in paths:
         typer.echo(p)
-    typer.echo(f"Exported {len(paths)} Harbor task(s) to {out_dir}")
+    summary = f"Exported {len(paths)} Harbor task(s) to {out_dir}"
+    if failures:
+        summary += f", skipped {len(failures)} ({', '.join(iid for iid, _ in failures)})"
+    typer.echo(summary)
 
 
 @app.command("export-config")
@@ -69,6 +79,12 @@ def export_config(
         raise typer.BadParameter("Harbor config must define at least one dataset")
 
     total = 0
+    failures: list[tuple[str, Exception]] = []
+
+    def _skip(instance_id: str, exc: Exception) -> None:
+        typer.echo(f"WARNING: skipping {instance_id}: {type(exc).__name__}: {exc}", err=True)
+        failures.append((instance_id, exc))
+
     for dataset in datasets:
         if not isinstance(dataset, dict):
             raise typer.BadParameter("Each Harbor dataset must be an object")
@@ -83,12 +99,20 @@ def export_config(
         ):
             raise typer.BadParameter("Harbor dataset task_names must be a non-empty list of strings")
 
-        paths = convert_all(Path(out_dir), instance_ids=task_names or None, target_language=target_language)
+        paths = convert_all(
+            Path(out_dir), instance_ids=task_names or None, target_language=target_language, on_error=_skip
+        )
         total += len(paths)
         for path in paths:
             typer.echo(path)
 
-    typer.echo(f"Exported {total} Harbor task(s) from {config}")
+    # Per-task conversion failures are skipped (not fatal) so the surviving tasks
+    # still flow into `harbor run`; the exit code stays 0 for the runner's
+    # `set -euo pipefail`. Genuinely fatal config errors already raised above.
+    summary = f"Exported {total} Harbor task(s) from {config}"
+    if failures:
+        summary += f", skipped {len(failures)} ({', '.join(iid for iid, _ in failures)})"
+    typer.echo(summary)
 
 
 @app.command()
