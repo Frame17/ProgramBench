@@ -27,8 +27,10 @@ ENV PATH="${KOTLIN_HOME}/bin:${PATH}"
 {% endif %}
 # The separate verifier must not inherit anything the agent left behind: wipe
 # /workspace at build time. Harbor then restores only the handed-off artifacts
-# (the agent's /workspace minus ./executable) on top before test.sh runs.
-RUN rm -rf /workspace && mkdir -p /workspace
+# (the agent's /workspace minus ./executable) on top before test.sh runs. Also
+# wipe /opt/programbench/reference (where the environment image relocated the
+# real reference binary) so the verifier image holds no recoverable copy either.
+RUN rm -rf /workspace /opt/programbench/reference && mkdir -p /workspace
 WORKDIR /workspace
 # In separate-verifier mode Harbor does not upload the tests dir (the verifier
 # runs with skip_tests_upload=True), so the image must own /tests: bake in

@@ -23,6 +23,24 @@ RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu
     && apt-get install -y --no-install-recommends file ripgrep xxd \
     && rm -rf /var/lib/apt/lists/*
 {% endif %}
+# Reference isolation: the cleanroom bakes the execute-only reference binary at
+# /workspace/executable, but /workspace itself is agent-owned, so the agent can
+# `mv` the file (Unix rename permission is on the containing directory, not the
+# file) and Harbor would copy the renamed bytes out as the artifact. Relocate
+# the real bytes to a root-only directory outside /workspace and leave only a
+# symlink behind: the agent can rename or delete the *link*, never the bytes,
+# and `docker cp` (task.toml keeps artifacts=["/workspace"] with no exclusions)
+# copies the link, not its target. Runs as root before sudo is dropped and
+# before the agent takes ownership of /workspace. Conditional so exports without
+# a bundled reference remain a no-op.
+RUN if [ -f /workspace/executable ] && [ ! -L /workspace/executable ]; then \
+        mkdir -p /opt/programbench/reference \
+        && cp -a /workspace/executable /opt/programbench/reference/executable \
+        && rm -f /workspace/executable \
+        && ln -s /opt/programbench/reference/executable /workspace/executable \
+        && chown -R root:root /opt/programbench/reference \
+        && chmod -R go-w /opt/programbench/reference ; \
+    fi
 # The cleanroom image grants the non-root agent NOPASSWD sudo for apt-get, dpkg,
 # pip, npm, cargo and go — each an arbitrary-code-as-root path (e.g. an apt
 # Pre-Invoke hook), which would hand back the ability to read the execute-only

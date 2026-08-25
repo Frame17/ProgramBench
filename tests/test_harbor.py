@@ -167,6 +167,50 @@ def test_agent_image_ships_inspection_tools_and_drops_sudo(tmp_path):
     assert "rm -f /etc/sudoers.d/agent-packages" in dockerfile
 
 
+def test_environment_image_relocates_reference_out_of_workspace(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
+    dockerfile = (out / "environment" / "Dockerfile").read_text()
+
+    # The real reference bytes are copied to a root-only dir outside /workspace,
+    # the original is dropped, and only a symlink is left in its place.
+    assert "cp -a /workspace/executable /opt/programbench/reference/executable" in dockerfile
+    assert "rm -f /workspace/executable" in dockerfile
+    assert "ln -s /opt/programbench/reference/executable /workspace/executable" in dockerfile
+    # The relocated dir/file is root-owned and not group/other writable, so the
+    # agent (who owns /workspace) can only rename/delete the symlink, not the bytes.
+    assert "chown -R root:root /opt/programbench/reference" in dockerfile
+    assert "chmod -R go-w /opt/programbench/reference" in dockerfile
+    # Conditional so exports without a bundled reference stay a no-op.
+    assert "if [ -f /workspace/executable ] && [ ! -L /workspace/executable ]; then" in dockerfile
+
+    # The relocation must run as root before sudo is dropped (otherwise the
+    # chown/relocate could no longer be guaranteed to run privileged).
+    assert dockerfile.index("cp -a /workspace/executable") < dockerfile.index(
+        "rm -f /etc/sudoers.d/agent-packages"
+    )
+
+
+def test_verifier_image_wipes_relocated_reference(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
+    verifier_dockerfile = (out / "tests" / "Dockerfile").read_text()
+
+    # The verifier wipes both /workspace and the relocated reference dir so no
+    # recoverable copy of the reference survives on the verification side either.
+    assert "rm -rf /workspace /opt/programbench/reference" in verifier_dockerfile
+
+
+def test_test_sh_drops_escaping_and_dangling_symlinks(tmp_path):
+    test_sh = (harbor.HARBOR_DATA / "test.sh").read_text()
+
+    # Still drops a leftover ./executable (now possibly a symlink).
+    assert "rm -f ./executable" in test_sh
+    # Hardened cleanup: resolve every workspace symlink and drop any whose
+    # realpath escapes /workspace (dangling links resolve to nothing => dropped).
+    assert 'find "$WORKSPACE" -type l -print0' in test_sh
+    assert 'target="$(readlink -f "$link" 2>/dev/null || true)"' in test_sh
+    assert '"$ws_real"/*) : ;;' in test_sh
+
+
 def test_convert_instance_exports_root_agent_for_oracle_verification(tmp_path):
     out = convert_instance(_calc_instance(), tmp_path, agent_user="root")
 
