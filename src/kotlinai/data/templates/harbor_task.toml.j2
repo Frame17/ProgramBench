@@ -1,8 +1,17 @@
 version = "1.0"
-# Hand the agent's workspace to the separate verifier, excluding any prebuilt
-# ./executable so the offline build must reproduce it (matches ProgramBench's
-# submission archive, which the evaluator wipes ./executable from before compile).
-artifacts = [{ source = "/workspace", exclude = ["executable"] }]
+# Hand the agent's workspace to the separate verifier. tests/test.sh drops any
+# prebuilt ./executable before it runs compile.sh, so the offline build still
+# has to reproduce it (matching ProgramBench, whose evaluator wipes ./executable
+# from the submission archive before compiling).
+#
+# Deliberately no `exclude`: Harbor only reaches for its tar-based transfer when
+# an artifact has exclusions, and that path extracts host-side with
+# `tarfile.extractall(filter="data")`, which raises AbsoluteLinkError on any
+# absolute symlink in the tree. An agent aliasing the reference binary
+# (`ln -s /workspace/executable /workspace/refbin`) therefore lost its whole
+# workspace handoff and scored 0. With no exclusions Harbor uses `docker cp`,
+# which is indifferent to symlinks.
+artifacts = ["/workspace"]
 
 [metadata]
 author_name = "ProgramBench"
@@ -15,17 +24,26 @@ upstream_commit = "{{ commit }}"
 {% endif %}solution_explanation = "The reference source is intentionally removed; the agent must reverse-engineer the installed black-box binary and ship a compile.sh that rebuilds it offline."
 verification_explanation = "A separate verifier container (built from the cleanroom image with /workspace wiped) receives the agent's /workspace as an artifact minus ./executable, rebuilds ./executable from compile.sh with no network, then runs each active test branch's behavioral suite against it. Reward is the fraction of non-ignored tests that pass."
 
-# No network during inference: the agent must reverse-engineer the binary, not
-# fetch upstream source. The agent phase overrides the baseline to an
-# LLM-API-only allowlist (requires a dynamic_network_policy environment backend,
-# e.g. Docker/OrbStack on Linux with nftables).
+# The environment baseline stays public so Harbor can build the image and install
+# the agent CLI (agent setup runs before the agent-phase policy applies).
 [environment]
 build_timeout_sec = {{ build_timeout }}
 cpus = {{ env_cpus }}
 network_mode = "public"
 
+# No network during inference beyond the model API: the agent must
+# reverse-engineer the binary, not fetch upstream source. Overriding the baseline
+# per phase requires a dynamic_network_policy environment backend (e.g.
+# Docker/OrbStack on Linux with nftables).
+#
+# The agent runs as {{ agent_user }}. The default is a non-root user, so the
+# mode-111 reference binary at /workspace/executable can be executed but not
+# read, copied, or statically inspected; root would bypass those mode bits
+# entirely and is only for oracle verification, whose golden solve.sh must read
+# the reference (`harbor export --agent-user root`).
 [agent]
 timeout_sec = {{ agent_timeout }}
+user = "{{ agent_user }}"
 network_mode = "allowlist"
 allowed_hosts = {{ allowed_hosts | tojson }}
 

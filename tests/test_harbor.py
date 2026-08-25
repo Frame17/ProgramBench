@@ -54,7 +54,7 @@ def test_convert_instance_emits_full_harbor_layout(tmp_path):
     ).read_text()
     environment_dockerfile = (out / "environment" / "Dockerfile").read_text()
     assert "archive.ubuntu.com/ubuntu" in environment_dockerfile
-    assert "apt-get install -y --no-install-recommends ripgrep" in environment_dockerfile
+    assert "apt-get install -y --no-install-recommends file ripgrep xxd" in environment_dockerfile
 
     # The separate verifier image is FROM the cleanroom, wipes /workspace, and
     # bakes the tests dir into /tests (skip_tests_upload=True in separate mode).
@@ -113,13 +113,18 @@ def test_convert_instance_does_not_add_jvm_toolchain_for_other_targets(tmp_path)
         assert "kotlin-compiler" not in contents
 
 
-def test_default_agent_allowlist_does_not_expose_toolchain_hosts(tmp_path):
+def test_default_agent_allowlist_does_not_expose_toolchain_or_source_hosts(tmp_path):
     out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
     allowed_hosts = tomllib.loads((out / "task.toml").read_text())["agent"]["allowed_hosts"]
 
     assert "archive.ubuntu.com" not in allowed_hosts
     assert "repo.maven.apache.org" not in allowed_hosts
     assert "services.gradle.org" not in allowed_hosts
+    # Agent setup installs the CLI before the agent-phase policy applies, so
+    # these are not needed here and would let the agent fetch upstream source.
+    assert "raw.githubusercontent.com" not in allowed_hosts
+    assert "nodejs.org" not in allowed_hosts
+    assert "registry.npmjs.org" not in allowed_hosts
 
 
 def test_convert_instance_task_toml_enforces_programbench_policy(tmp_path):
@@ -131,6 +136,12 @@ def test_convert_instance_task_toml_enforces_programbench_policy(tmp_path):
     assert cfg["agent"]["network_mode"] == "allowlist"
     assert cfg["agent"]["allowed_hosts"] == ["api.example.com"]
 
+    # The agent runs non-root so it cannot read the execute-only reference binary.
+    assert cfg["agent"]["user"] == harbor.AGENT_USER != "root"
+
+    # parallelism x cpus must stay inside the host's core count.
+    assert harbor.DOCKER_CPUS == 8
+
     # The verifier runs in its own container; it keeps network for test
     # execution (test.sh blocks only around compile.sh), matching ProgramBench.
     assert cfg["verifier"]["environment_mode"] == "separate"
@@ -138,8 +149,28 @@ def test_convert_instance_task_toml_enforces_programbench_policy(tmp_path):
     assert cfg["verifier"]["env"]["PYTEST_ADDOPTS"] == "--max-worker-restart=4"
     assert cfg["environment"]["cpus"] == cfg["verifier"]["environment"]["cpus"] == harbor.DOCKER_CPUS
 
-    # The agent's workspace is handed off, minus any prebuilt executable.
-    assert cfg["artifacts"] == [{"source": "/workspace", "exclude": ["executable"]}]
+    # The whole workspace is handed off with no tar exclusions: exclusions push
+    # Harbor onto a transfer path that rejects absolute symlinks, and test.sh
+    # already drops ./executable before compiling.
+    assert cfg["artifacts"] == ["/workspace"]
+    assert "rm -f ./executable" in (harbor.HARBOR_DATA / "test.sh").read_text()
+
+
+def test_agent_image_ships_inspection_tools_and_drops_sudo(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
+    dockerfile = (out / "environment" / "Dockerfile").read_text()
+
+    # Every trial of the prior run reached for `file`; several reached for `xxd`.
+    assert " file " in dockerfile
+    assert " xxd " in dockerfile
+    # Without this the non-root agent can regain root and read the reference.
+    assert "rm -f /etc/sudoers.d/agent-packages" in dockerfile
+
+
+def test_convert_instance_exports_root_agent_for_oracle_verification(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, agent_user="root")
+
+    assert tomllib.loads((out / "task.toml").read_text())["agent"]["user"] == "root"
 
 
 def test_convert_instance_overwrites_existing(tmp_path):

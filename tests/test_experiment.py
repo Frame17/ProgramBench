@@ -52,13 +52,17 @@ def test_comparison_job_config_contains_both_languages_and_shared_parameters(tmp
     assert config["n_attempts"] == 2
     assert config["retry"] == {"max_retries": 1}
     assert config["agents"] == [base["agent"]]
-    assert len(config["datasets"]) == 2
-    assert [dataset["task_names"] for dataset in config["datasets"]] == [
-        ["task-a", "task-b"],
-        ["task-a", "task-b"],
+
+    # Languages alternate task by task, so neither runs entirely before the other.
+    # Single-task datasets (not Harbor's `tasks` list) keep the job's metric
+    # registry seeded per language; `tasks` aborts the job with an IndexError.
+    assert "tasks" not in config
+    assert [(Path(dataset["path"]).name, dataset["task_names"]) for dataset in config["datasets"]] == [
+        ("java", ["task-a"]),
+        ("kotlin", ["task-a"]),
+        ("java", ["task-b"]),
+        ("kotlin", ["task-b"]),
     ]
-    assert config["datasets"][0]["path"].endswith("tasks/java")
-    assert config["datasets"][1]["path"].endswith("tasks/kotlin")
 
 
 @pytest.mark.parametrize("languages", [[], ["Java"], ["Java", "Kotlin", "Go"], ["Java", "java"], ["", "Kotlin"]])
@@ -117,7 +121,7 @@ def test_experiment_uses_configured_language_order_and_reports_after_failure(tmp
         derived = yaml.safe_load(derived_config.read_text())
         calls.append(("run", derived["job_name"]))
         assert derived["n_concurrent_trials"] == 3
-        assert [Path(dataset["path"]).name for dataset in derived["datasets"]] == ["go", "rust"]
+        assert [Path(d["path"]).name for d in derived["datasets"]] == ["go", "rust", "go", "rust"]
         return 2
 
     exit_code = run_comparison_experiment(
@@ -126,6 +130,7 @@ def test_experiment_uses_configured_language_order_and_reports_after_failure(tmp
         runner,
         exporter=fake_export,
         agent_runner=fake_run,
+        version_resolver=lambda package: "1.2.3",
     )
 
     assert exit_code == 1
@@ -145,6 +150,44 @@ def test_experiment_uses_configured_language_order_and_reports_after_failure(tmp
     assert report["languages"] == [{"key": "go", "name": "Go"}, {"key": "rust", "name": "Rust"}]
     assert report["delta"] == {"from": "go", "to": "rust"}
     assert (output_dir / "report.md").read_text().startswith("# Go/Rust ProgramBench Comparison")
+
+
+def test_experiment_pins_one_agent_version_per_run(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    runner = tmp_path / "repo" / "scripts" / "run_agent.sh"
+    runner.parent.mkdir(parents=True)
+    runner.write_text("#!/usr/bin/env bash\n")
+    resolved = []
+
+    def resolver(package: str) -> str:
+        resolved.append(package)
+        return "9.9.9"
+
+    def fake_export(out_dir: Path, *, instance_ids: list[str], target_language: str):
+        return [(out_dir / instance_id) for instance_id in instance_ids]
+
+    def run(output_dir: Path, config: dict) -> dict:
+        config_path.write_text(yaml.safe_dump(config))
+        run_comparison_experiment(
+            config_path,
+            output_dir,
+            runner,
+            exporter=fake_export,
+            agent_runner=lambda _runner, _config: 0,
+            version_resolver=resolver,
+        )
+        return yaml.safe_load((output_dir / "configs" / "comparison.yaml").read_text())
+
+    derived = run(tmp_path / "resolved", _base_config())
+    assert resolved == ["@openai/codex"]
+    assert derived["agents"][0]["kwargs"]["version"] == "9.9.9"
+    assert json.loads((tmp_path / "resolved" / "manifest.json").read_text())["agent"]["version"] == "9.9.9"
+
+    # An explicit pin wins, and no registry lookup happens.
+    pinned = _base_config()
+    pinned["agent"]["kwargs"]["version"] = "0.1.0"
+    assert run(tmp_path / "explicit", pinned)["agents"][0]["kwargs"]["version"] == "0.1.0"
+    assert resolved == ["@openai/codex"]
 
 
 def _write_trial(
@@ -265,6 +308,48 @@ def test_report_aggregates_attempts_tokens_steps_and_failures(tmp_path):
     assert markdown_path.read_text() == markdown
     persisted = json.loads(json_path.read_text())
     assert persisted["totals"]["results"]["java"]["reward_sum"] == 1.5
+
+
+def test_report_paired_difference_summarizes_per_task_deltas(tmp_path):
+    experiment_dir = tmp_path / "experiment"
+    job_dir = experiment_dir / "jobs" / "comparison"
+    experiment_dir.mkdir()
+    (experiment_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "language_order": ["Java", "Kotlin"],
+                "task_names": ["task-a", "task-b", "task-c", "task-d"],
+                "languages": {
+                    "java": {"job_dir": str(job_dir), "source": "java"},
+                    "kotlin": {"job_dir": str(job_dir), "source": "kotlin"},
+                },
+            }
+        )
+    )
+    rewards = {
+        "task-a": {"java": 0.5, "kotlin": 0.75},  # +0.25
+        "task-b": {"java": 1.0, "kotlin": 0.5},  # -0.5
+        "task-c": {"java": 0.25, "kotlin": 0.25},  # tie
+        "task-d": {"java": 0.4, "kotlin": None},  # unpaired, excluded
+    }
+    for task_name, by_language in rewards.items():
+        for language, reward in by_language.items():
+            _write_trial(job_dir, f"{language}__{task_name}", task_name=task_name, source=language, reward=reward)
+
+    paired = build_comparison_report(experiment_dir)["paired"]
+
+    assert paired["n"] == 3
+    assert paired["mean"] == pytest.approx(-0.25 / 3)
+    assert paired["sd"] == pytest.approx(0.3818813, abs=1e-6)
+    # t(df=2) = 4.303, so a three-task interval is far too wide to exclude zero.
+    assert paired["ci_low"] == pytest.approx(-1.0320565, abs=1e-6)
+    assert paired["ci_high"] == pytest.approx(0.8653898, abs=1e-6)
+    assert (paired["wins"], paired["losses"], paired["ties"]) == (1, 1, 1)
+
+    markdown = render_markdown_report(build_comparison_report(experiment_dir))
+    assert "## Paired difference" in markdown
+    assert "| Mean difference | -0.0833 |" in markdown
+    assert "| Task wins (Kotlin / Java / tie) | 1 / 1 / 1 |" in markdown
 
 
 def test_report_supports_legacy_separate_job_manifest_without_sources(tmp_path):

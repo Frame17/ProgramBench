@@ -9,6 +9,8 @@ from pathlib import Path
 import typer
 import yaml
 
+from kotlinai.harbor import AGENT_USER
+
 app = typer.Typer(
     name="harbor",
     help="Export and compare tasks in the Harbor task format (harborframework.com).",
@@ -32,6 +34,12 @@ def export(
         "--target-language",
         help="Language the agent must use for its implementation; defaults to the instance language.",
     ),
+    agent_user: str = typer.Option(
+        AGENT_USER,
+        "--agent-user",
+        help="User the agent phase runs as. The default cannot read the execute-only reference binary; "
+        "pass 'root' to export an oracle-verifiable task (the golden solve.sh must read it).",
+    ),
 ) -> None:
     """Convert ProgramBench instances into Harbor tasks under OUT_DIR."""
     from kotlinai.harbor import convert_all
@@ -49,6 +57,7 @@ def export(
         slice_spec=slice_spec,
         allowed_hosts=allowed_host or None,
         target_language=target_language,
+        agent_user=agent_user,
         on_error=_skip,
     )
     for p in paths:

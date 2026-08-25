@@ -45,7 +45,17 @@ uv run programbench harbor export ./out --filter '^svenstaro__' --slice 0:5
 uv run programbench harbor export ./out --target-language Kotlin <id>
 # Restrict the agent's network allowlist to a specific model API host
 uv run programbench harbor export ./out <id> --allowed-host api.openai.com
+# Export an oracle-verifiable task (the golden solve.sh needs root; see below)
+uv run programbench harbor export ./out <id> --agent-user root
 ```
+
+The agent phase runs as the cleanroom image's non-root `agent` user, so the
+mode-111 reference binary at `/workspace/executable` can be executed but not
+read, copied, or statically inspected; the generated agent image also drops the
+image's NOPASSWD sudo grant, which would otherwise hand root back. The agent's
+network allowlist covers the model API only — Harbor installs the agent CLI
+during *setup*, which runs before the agent-phase policy applies, so no
+package-registry or source-hosting host belongs on that list.
 
 ## Language comparison experiment
 
@@ -69,8 +79,14 @@ comparisons of reward, cost, agent steps, and tokens.
 
 The config must contain exactly two languages, one agent, positive parallelism,
 and an explicit `tasks.task_names` list. `parallelism` controls concurrent trials
-globally across both languages. Report deltas are the second language minus the
-first.
+globally across both languages; keep `parallelism * harbor.DOCKER_CPUS` inside
+the host's core count. Trials are submitted with the languages interleaved task
+by task, so drift in host load or model serving over a long run cannot align with
+the language contrast. Each run also resolves and pins one agent CLI version for
+all of its trials, recorded in `manifest.json` and the derived job config; set
+`agent.kwargs.version` yourself to skip the registry lookup. Report deltas are
+the second language minus the first, and `report.md` carries a paired-difference
+interval over the per-task deltas.
 Each experiment keeps its generated tasks, derived configs, Harbor jobs,
 `manifest.json`, `report.md`, and `report.json` under its output directory.
 
@@ -96,9 +112,10 @@ Each instance produces a standard Harbor task directory:
 
 ProgramBench's environment ships no source, but a working reference build sits
 at the canonical path the tests target — `/workspace/executable` — execute-only
-so a non-root agent can't read its bytes. The oracle (which runs as root)
-reconstructs `./executable` from it with **no network** and no per-language
-vendoring:
+so a non-root agent can't read its bytes. The oracle reads them, so it needs
+root: Harbor runs `solve.sh` as the task's `[agent] user`, which means oracle
+verification requires a task exported with `--agent-user root`. It then
+reconstructs `./executable` with **no network** and no per-language vendoring:
 
 1. `solve.sh` base64-encodes `/workspace/executable` into
    `/workspace/.programbench_oracle_reference`.
@@ -137,6 +154,7 @@ if the JUnit XML marks it passed (absent counts as unresolved). It writes:
   still needs network access while building the task images.
 
 ```bash
+uv run programbench harbor export ./out <instance_id> --agent-user root
 harbor trials start --path ./out/<instance_id> --agent oracle
 ```
 

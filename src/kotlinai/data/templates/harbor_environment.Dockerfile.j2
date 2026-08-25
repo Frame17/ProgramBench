@@ -5,7 +5,7 @@ FROM {{ image_name }}:{{ image_tag }}
 {% if install_kotlin %}
 RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl openjdk-21-jdk-headless ripgrep unzip \
+    && apt-get install -y --no-install-recommends ca-certificates curl file openjdk-21-jdk-headless ripgrep unzip xxd \
     && curl -fsSLo /tmp/kotlin-compiler.zip \
         "https://github.com/JetBrains/kotlin/releases/download/v{{ kotlin_version }}/kotlin-compiler-{{ kotlin_version }}.zip" \
     && echo "{{ kotlin_compiler_sha256 }}  /tmp/kotlin-compiler.zip" | sha256sum -c - \
@@ -15,14 +15,20 @@ RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu
 {% elif install_jdk %}
 RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends openjdk-21-jdk-headless ripgrep \
+    && apt-get install -y --no-install-recommends file openjdk-21-jdk-headless ripgrep xxd \
     && rm -rf /var/lib/apt/lists/*
 {% else %}
 RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ripgrep \
+    && apt-get install -y --no-install-recommends file ripgrep xxd \
     && rm -rf /var/lib/apt/lists/*
 {% endif %}
+# The cleanroom image grants the non-root agent NOPASSWD sudo for apt-get, dpkg,
+# pip, npm, cargo and go — each an arbitrary-code-as-root path (e.g. an apt
+# Pre-Invoke hook), which would hand back the ability to read the execute-only
+# reference binary. Nothing legitimate needs it: the toolchains are baked in
+# above and the agent phase has no network.
+RUN rm -f /etc/sudoers.d/agent-packages
 {% if install_jdk %}
 ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 {% endif %}
