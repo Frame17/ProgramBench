@@ -44,6 +44,22 @@ RESERVED_HARBOR_FIELDS = {
 # in one job that is a confound, not just noise.
 AGENT_VERSION_PACKAGES = {"codex": "@openai/codex"}
 
+# Default retry policy for the generated Harbor job. Transient agent API errors
+# (e.g. UnknownApiError, "API Error: Failed to parse JSON") are one-off proxy
+# hiccups that a clean re-run of the trial almost always clears, so retrying
+# recovers otherwise-lost trials. We rely on Harbor's default
+# ``RetryConfig.exclude_exceptions`` (which already contains AgentTimeoutError,
+# VerifierTimeoutError, ApiUsageLimitError, ...) so genuine timeouts/limits stay
+# non-retried. A retry re-runs the whole trial from scratch, so it is capped low.
+DEFAULT_RETRY = {"max_retries": 2}
+
+# Default per-run model spend cap for claude-code (``--max-budget-usd``). The
+# agent timeout is now 3 hours (see ``kotlinai.harbor.AGENT_TIMEOUT_SEC``); this
+# bounds spend under that larger time budget. A retry re-runs the whole trial,
+# so this cap is per agent run, not per trial. Passed as a string, matching how
+# claude-code's CLI flag is resolved from kwargs.
+DEFAULT_AGENT_MAX_BUDGET_USD = "30"
+
 # Two-sided 95% Student's t critical values indexed by degrees of freedom (entry
 # 0 is unused). Beyond the table the value has converged on the normal quantile.
 # fmt: off
@@ -75,6 +91,21 @@ def pin_agent_version(agent: dict[str, Any], resolver: Callable[[str], str]) -> 
     kwargs = agent.setdefault("kwargs", {})
     if package is not None and not kwargs.get("version"):
         kwargs["version"] = resolver(package)
+
+
+def apply_agent_cost_limit(agent: dict[str, Any]) -> None:
+    """Cap claude-code's per-run model spend unless the caller set a limit.
+
+    Harbor passes ``kwargs.max_budget_usd`` to claude-code as ``--max-budget-usd``.
+    Now that the agent timeout is 3 hours (see ``AGENT_TIMEOUT_SEC``), this keeps
+    a single agent run's spend bounded. The flag is claude-code specific, so this
+    is a no-op for other agents, and an explicit ``agent.kwargs.max_budget_usd``
+    in the config still wins.
+    """
+    if agent["name"].strip().lower() != "claude-code":
+        return
+    kwargs = agent.setdefault("kwargs", {})
+    kwargs.setdefault("max_budget_usd", DEFAULT_AGENT_MAX_BUDGET_USD)
 
 
 @dataclass(frozen=True)
@@ -162,6 +193,8 @@ def validate_comparison_config(config: dict[str, Any]) -> ComparisonSettings:
     conflicting_fields = sorted(set(harbor) & RESERVED_HARBOR_FIELDS)
     if conflicting_fields:
         raise ComparisonError(f"harbor contains generated field(s): {conflicting_fields}")
+    if "retry" in harbor and not isinstance(harbor["retry"], dict):
+        raise ComparisonError("harbor.retry must be an object")
     return ComparisonSettings(
         languages=languages,
         parallelism=parallelism,
@@ -194,6 +227,9 @@ def build_comparison_job_config(
     an IndexError partway through. Datasets keep that registry populated.
     """
     config = copy.deepcopy(settings.harbor)
+    # A default retry only when the user has not set one, so an explicit
+    # ``harbor.retry`` in the config still fully overrides it.
+    config.setdefault("retry", copy.deepcopy(DEFAULT_RETRY))
     config["job_name"] = job_name
     config["jobs_dir"] = str(jobs_dir.resolve())
     config["n_concurrent_trials"] = settings.parallelism
@@ -253,6 +289,8 @@ def run_comparison_experiment(
     # CLI is the confound this run exists to avoid. Pin explicitly in the config
     # to run without registry access.
     pin_agent_version(settings.agent, version_resolver)
+    # Bound claude-code's per-run spend now that the agent timeout is 3 hours.
+    apply_agent_cost_limit(settings.agent)
     output_dir.mkdir(parents=True)
     jobs_dir = output_dir / "jobs"
     repo_root = runner.parent.parent

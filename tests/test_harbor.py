@@ -156,6 +156,16 @@ def test_convert_instance_task_toml_enforces_programbench_policy(tmp_path):
     assert "rm -f ./executable" in (harbor.HARBOR_DATA / "test.sh").read_text()
 
 
+def test_convert_instance_bakes_three_hour_agent_timeout(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
+    cfg = tomllib.loads((out / "task.toml").read_text())
+
+    # The agent gets a 3-hour budget so long reverse-engineering tasks finish;
+    # a per-run cost cap (experiment.py) keeps spend bounded under that budget.
+    assert harbor.AGENT_TIMEOUT_SEC == 10800.0
+    assert cfg["agent"]["timeout_sec"] == harbor.AGENT_TIMEOUT_SEC
+
+
 def test_agent_image_ships_inspection_tools_and_drops_sudo(tmp_path):
     out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
     dockerfile = (out / "environment" / "Dockerfile").read_text()

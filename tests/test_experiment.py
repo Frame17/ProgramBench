@@ -13,7 +13,9 @@ import pytest
 import yaml
 
 from kotlinai.experiment import (
+    DEFAULT_AGENT_MAX_BUDGET_USD,
     ComparisonError,
+    apply_agent_cost_limit,
     build_comparison_job_config,
     build_comparison_report,
     render_markdown_report,
@@ -63,6 +65,67 @@ def test_comparison_job_config_contains_both_languages_and_shared_parameters(tmp
         ("java", ["task-b"]),
         ("kotlin", ["task-b"]),
     ]
+
+
+def test_comparison_job_config_injects_default_retry_when_unset(tmp_path):
+    base = _base_config()
+    base["harbor"].pop("retry")
+    settings = validate_comparison_config(base)
+    config = build_comparison_job_config(
+        settings,
+        task_dirs={
+            "java": tmp_path / "tasks" / "java",
+            "kotlin": tmp_path / "tasks" / "kotlin",
+        },
+        jobs_dir=tmp_path / "jobs",
+        job_name="comparison",
+    )
+
+    # Transient agent API errors are retried; genuine timeouts/limits stay
+    # non-retried via Harbor's default exclude_exceptions.
+    assert config["retry"] == {"max_retries": 2}
+
+
+def test_comparison_job_config_keeps_user_supplied_retry(tmp_path):
+    base = _base_config()
+    base["harbor"]["retry"] = {"max_retries": 5}
+    settings = validate_comparison_config(base)
+    config = build_comparison_job_config(
+        settings,
+        task_dirs={
+            "java": tmp_path / "tasks" / "java",
+            "kotlin": tmp_path / "tasks" / "kotlin",
+        },
+        jobs_dir=tmp_path / "jobs",
+        job_name="comparison",
+    )
+
+    assert config["retry"] == {"max_retries": 5}
+
+
+def test_validate_comparison_config_rejects_non_object_retry():
+    config = _base_config()
+    config["harbor"]["retry"] = 3
+    with pytest.raises(ComparisonError, match="harbor.retry"):
+        validate_comparison_config(config)
+
+
+def test_apply_agent_cost_limit_defaults_claude_code_budget():
+    agent = {"name": "claude-code", "model_name": "claude-sonnet-5"}
+    apply_agent_cost_limit(agent)
+    assert agent["kwargs"]["max_budget_usd"] == DEFAULT_AGENT_MAX_BUDGET_USD
+
+
+def test_apply_agent_cost_limit_keeps_user_supplied_budget():
+    agent = {"name": "claude-code", "model_name": "claude-sonnet-5", "kwargs": {"max_budget_usd": "50"}}
+    apply_agent_cost_limit(agent)
+    assert agent["kwargs"]["max_budget_usd"] == "50"
+
+
+def test_apply_agent_cost_limit_is_noop_for_other_agents():
+    agent = {"name": "codex", "model_name": "openai/test-model"}
+    apply_agent_cost_limit(agent)
+    assert "max_budget_usd" not in agent.get("kwargs", {})
 
 
 @pytest.mark.parametrize("languages", [[], ["Java"], ["Java", "Kotlin", "Go"], ["Java", "java"], ["", "Kotlin"]])

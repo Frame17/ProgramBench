@@ -38,7 +38,10 @@ DOCKER_CPUS = 8
 COMPILE_TIMEOUT_SEC = 900.0
 BRANCH_TIMEOUT_SEC = 3600.0
 BUILD_TIMEOUT_SEC = 1800.0
-AGENT_TIMEOUT_SEC = 3600.0
+# 3 hours. These reverse-engineering tasks need more than the earlier 1-hour cap
+# to finish; a per-run cost limit (see experiment.py) keeps the larger budget
+# bounded. AgentTimeoutError stays in Harbor's exclude_exceptions (not retried).
+AGENT_TIMEOUT_SEC = 10800.0
 KOTLIN_VERSION = "2.4.10"
 KOTLIN_COMPILER_SHA256 = "473dd66c7a3ef4b182065b3da670466c1bf2773a9dbb0ed8b33a39fe9d4f876d"
 # The agent phase reaches the model API and nothing else: fetching upstream
