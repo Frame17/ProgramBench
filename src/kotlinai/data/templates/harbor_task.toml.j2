@@ -31,10 +31,11 @@ build_timeout_sec = {{ build_timeout }}
 cpus = {{ env_cpus }}
 network_mode = "public"
 
-# No network during inference beyond the model API: the agent must
-# reverse-engineer the binary, not fetch upstream source. Overriding the baseline
-# per phase requires a dynamic_network_policy environment backend (e.g.
-# Docker/OrbStack on Linux with nftables).
+# During inference, the agent can reach only the configured model, package,
+# build-tool, and toolchain documentation hosts. Source hosting stays blocked:
+# the agent must reverse-engineer the binary, not fetch upstream source.
+# Overriding the baseline per phase requires a dynamic_network_policy
+# environment backend (e.g. Docker/OrbStack on Linux with nftables).
 #
 # The agent runs as {{ agent_user }}. The default is a non-root user, so the
 # mode-111 reference binary at /workspace/executable can be executed but not

@@ -44,16 +44,40 @@ BUILD_TIMEOUT_SEC = 1800.0
 AGENT_TIMEOUT_SEC = 10800.0
 KOTLIN_VERSION = "2.4.10"
 KOTLIN_COMPILER_SHA256 = "473dd66c7a3ef4b182065b3da670466c1bf2773a9dbb0ed8b33a39fe9d4f876d"
-# The agent phase reaches the model API and nothing else: fetching upstream
-# source would defeat the black-box task. The npm/nvm hosts Harbor's Codex
-# installer needs are deliberately absent — agent setup runs outside the
-# agent-phase policy (Harbor's `Trial._setup_agent` is not wrapped by
-# `_phase_network_policy`), so it installs under the `[environment]` public
-# baseline. Language toolchains are baked in while Harbor builds the task images.
-# Parameterized per runner (override with `harbor export --allowed-host`).
+# The agent phase can reach model APIs and the package, build-tool, and
+# toolchain documentation hosts needed to assemble an offline JVM submission.
+# Source-hosting and agent-installer hosts remain absent: fetching upstream
+# source would defeat the black-box task, while agent setup runs outside the
+# agent-phase policy under the `[environment]` public baseline. Parameterized
+# per runner (override with `harbor export --allowed-host`).
 DEFAULT_AGENT_ALLOWED_HOSTS = [
     "api.openai.com",
     "api.anthropic.com",
+    "repo.maven.apache.org",
+    "repo1.maven.org",
+    "plugins.gradle.org",
+    "services.gradle.org",
+    "downloads.gradle.org",
+    "maven.google.com",
+    "maven.pkg.jetbrains.space",
+    "maven.reposilite.com",
+    "oss.sonatype.org",
+    "kotlinlang.org",
+    "*.kotlinlang.org",
+    "kotl.in",
+    "*.jetbrains.com",
+    "docs.gradle.org",
+    "docs.gradle.com",
+    "gradle.com",
+    "gradle.org",
+    "scans.gradle.com",
+    "help.gradle.org",
+    "developer.android.com",
+    "schemas.android.com",
+    "pub.dartlang.org",
+    "pub.dev",
+    "pnpm.js.org",
+    "ant.apache.org",
 ]
 # The cleanroom image's uid-1000 user. It owns /workspace but, unlike root,
 # cannot read the execute-only reference binary at /workspace/executable.
@@ -136,7 +160,10 @@ def convert_instance(
         )
     )
     (out / "instruction.md").write_text(
-        _env.get_template("harbor_instruction.md.j2").render(target_language=target_language)
+        _env.get_template("harbor_instruction.md.j2").render(
+            target_language=target_language,
+            use_gradle=install_jdk,
+        )
     )
     (out / "environment" / "Dockerfile").write_text(
         _env.get_template("harbor_environment.Dockerfile.j2").render(

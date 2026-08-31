@@ -77,6 +77,18 @@ def test_convert_instance_instructs_agent_to_use_target_language(tmp_path):
     assert "You MUST implement the deliverable in Kotlin." in instruction
     assert "Write all source code in Kotlin." in instruction
     assert "Do not reimplement the program in another language." in instruction
+    assert "You MUST structure the implementation as a Gradle project." in instruction
+    assert "`compile.sh` MUST invoke\nGradle to build the program." in instruction
+    assert "vendor the Gradle\ndistribution and all project dependencies" in instruction
+    assert "run without\nnetwork access" in instruction
+
+
+def test_convert_instance_only_requires_gradle_for_jvm_targets(tmp_path):
+    java_out = convert_instance(_calc_instance(), tmp_path / "java", target_language="Java")
+    rust_out = convert_instance(_calc_instance(), tmp_path / "rust", target_language="Rust")
+
+    assert "Gradle project" in (java_out / "instruction.md").read_text()
+    assert "Gradle project" not in (rust_out / "instruction.md").read_text()
 
 
 def test_convert_instance_adds_kotlin_toolchain_to_agent_and_verifier(tmp_path):
@@ -113,15 +125,52 @@ def test_convert_instance_does_not_add_jvm_toolchain_for_other_targets(tmp_path)
         assert "kotlin-compiler" not in contents
 
 
-def test_default_agent_allowlist_does_not_expose_toolchain_or_source_hosts(tmp_path):
+def test_default_agent_allowlist_exposes_build_hosts_but_not_source_hosts(tmp_path):
     out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
     allowed_hosts = tomllib.loads((out / "task.toml").read_text())["agent"]["allowed_hosts"]
 
+    assert allowed_hosts == harbor.DEFAULT_AGENT_ALLOWED_HOSTS == [
+        "api.openai.com",
+        "api.anthropic.com",
+        "repo.maven.apache.org",
+        "repo1.maven.org",
+        "plugins.gradle.org",
+        "services.gradle.org",
+        "downloads.gradle.org",
+        "maven.google.com",
+        "maven.pkg.jetbrains.space",
+        "maven.reposilite.com",
+        "oss.sonatype.org",
+        "kotlinlang.org",
+        "*.kotlinlang.org",
+        "kotl.in",
+        "*.jetbrains.com",
+        "docs.gradle.org",
+        "docs.gradle.com",
+        "gradle.com",
+        "gradle.org",
+        "scans.gradle.com",
+        "help.gradle.org",
+        "developer.android.com",
+        "schemas.android.com",
+        "pub.dartlang.org",
+        "pub.dev",
+        "pnpm.js.org",
+        "ant.apache.org",
+    ]
     assert "archive.ubuntu.com" not in allowed_hosts
-    assert "repo.maven.apache.org" not in allowed_hosts
-    assert "services.gradle.org" not in allowed_hosts
+    assert "repo.maven.apache.org" in allowed_hosts
+    assert "repo1.maven.org" in allowed_hosts
+    assert "plugins.gradle.org" in allowed_hosts
+    assert "services.gradle.org" in allowed_hosts
+    assert "downloads.gradle.org" in allowed_hosts
+    assert "maven.google.com" in allowed_hosts
+    assert "maven.pkg.jetbrains.space" in allowed_hosts
+    assert "maven.reposilite.com" in allowed_hosts
+    assert "oss.sonatype.org" in allowed_hosts
     # Agent setup installs the CLI before the agent-phase policy applies, so
-    # these are not needed here and would let the agent fetch upstream source.
+    # its package and source hosts are not needed here. Source hosting stays
+    # blocked so the agent cannot fetch the upstream implementation.
     assert "raw.githubusercontent.com" not in allowed_hosts
     assert "nodejs.org" not in allowed_hosts
     assert "registry.npmjs.org" not in allowed_hosts
@@ -131,7 +180,7 @@ def test_convert_instance_task_toml_enforces_programbench_policy(tmp_path):
     out = convert_instance(_calc_instance(), tmp_path, allowed_hosts=["api.example.com"])
     cfg = tomllib.loads((out / "task.toml").read_text())
 
-    # Inference is offline; only the model API host is reachable in the agent phase.
+    # An explicit allowlist replaces the defaults for the agent phase.
     assert cfg["environment"]["network_mode"] == "public"
     assert cfg["agent"]["network_mode"] == "allowlist"
     assert cfg["agent"]["allowed_hosts"] == ["api.example.com"]

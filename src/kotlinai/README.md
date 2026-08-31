@@ -52,10 +52,12 @@ uv run programbench harbor export ./out <id> --agent-user root
 The agent phase runs as the cleanroom image's non-root `agent` user, so the
 mode-111 reference binary at `/workspace/executable` can be executed but not
 read, copied, or statically inspected; the generated agent image also drops the
-image's NOPASSWD sudo grant, which would otherwise hand root back. The agent's
-network allowlist covers the model API only — Harbor installs the agent CLI
-during *setup*, which runs before the agent-phase policy applies, so no
-package-registry or source-hosting host belongs on that list.
+image's NOPASSWD sudo grant, which would otherwise hand root back. The default
+agent network allowlist covers model APIs plus Maven, Gradle, Kotlin, Android,
+and related build-tool hosts so dependencies can be stored in `/workspace` for
+the offline verifier build. Source-hosting hosts remain blocked. Harbor installs
+the agent CLI during *setup*, before the agent-phase policy applies, so its
+installer hosts do not belong on the task allowlist.
 
 ## Language comparison experiment
 
