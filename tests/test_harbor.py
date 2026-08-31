@@ -54,7 +54,7 @@ def test_convert_instance_emits_full_harbor_layout(tmp_path):
     ).read_text()
     environment_dockerfile = (out / "environment" / "Dockerfile").read_text()
     assert "archive.ubuntu.com/ubuntu" in environment_dockerfile
-    assert "apt-get install -y --no-install-recommends ripgrep" in environment_dockerfile
+    assert "apt-get install -y --no-install-recommends file ripgrep xxd" in environment_dockerfile
 
     # The separate verifier image is FROM the cleanroom, wipes /workspace, and
     # bakes the tests dir into /tests (skip_tests_upload=True in separate mode).
@@ -77,6 +77,18 @@ def test_convert_instance_instructs_agent_to_use_target_language(tmp_path):
     assert "You MUST implement the deliverable in Kotlin." in instruction
     assert "Write all source code in Kotlin." in instruction
     assert "Do not reimplement the program in another language." in instruction
+    assert "You MUST structure the implementation as a Gradle project." in instruction
+    assert "`compile.sh` MUST invoke\nGradle to build the program." in instruction
+    assert "vendor the Gradle\ndistribution and all project dependencies" in instruction
+    assert "run without\nnetwork access" in instruction
+
+
+def test_convert_instance_only_requires_gradle_for_jvm_targets(tmp_path):
+    java_out = convert_instance(_calc_instance(), tmp_path / "java", target_language="Java")
+    rust_out = convert_instance(_calc_instance(), tmp_path / "rust", target_language="Rust")
+
+    assert "Gradle project" in (java_out / "instruction.md").read_text()
+    assert "Gradle project" not in (rust_out / "instruction.md").read_text()
 
 
 def test_convert_instance_adds_kotlin_toolchain_to_agent_and_verifier(tmp_path):
@@ -113,23 +125,71 @@ def test_convert_instance_does_not_add_jvm_toolchain_for_other_targets(tmp_path)
         assert "kotlin-compiler" not in contents
 
 
-def test_default_agent_allowlist_does_not_expose_toolchain_hosts(tmp_path):
+def test_default_agent_allowlist_exposes_build_hosts_but_not_source_hosts(tmp_path):
     out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
     allowed_hosts = tomllib.loads((out / "task.toml").read_text())["agent"]["allowed_hosts"]
 
+    assert allowed_hosts == harbor.DEFAULT_AGENT_ALLOWED_HOSTS == [
+        "api.openai.com",
+        "api.anthropic.com",
+        "repo.maven.apache.org",
+        "repo1.maven.org",
+        "plugins.gradle.org",
+        "services.gradle.org",
+        "downloads.gradle.org",
+        "maven.google.com",
+        "maven.pkg.jetbrains.space",
+        "maven.reposilite.com",
+        "oss.sonatype.org",
+        "kotlinlang.org",
+        "*.kotlinlang.org",
+        "kotl.in",
+        "*.jetbrains.com",
+        "docs.gradle.org",
+        "docs.gradle.com",
+        "gradle.com",
+        "gradle.org",
+        "scans.gradle.com",
+        "help.gradle.org",
+        "developer.android.com",
+        "schemas.android.com",
+        "pub.dartlang.org",
+        "pub.dev",
+        "pnpm.js.org",
+        "ant.apache.org",
+    ]
     assert "archive.ubuntu.com" not in allowed_hosts
-    assert "repo.maven.apache.org" not in allowed_hosts
-    assert "services.gradle.org" not in allowed_hosts
+    assert "repo.maven.apache.org" in allowed_hosts
+    assert "repo1.maven.org" in allowed_hosts
+    assert "plugins.gradle.org" in allowed_hosts
+    assert "services.gradle.org" in allowed_hosts
+    assert "downloads.gradle.org" in allowed_hosts
+    assert "maven.google.com" in allowed_hosts
+    assert "maven.pkg.jetbrains.space" in allowed_hosts
+    assert "maven.reposilite.com" in allowed_hosts
+    assert "oss.sonatype.org" in allowed_hosts
+    # Agent setup installs the CLI before the agent-phase policy applies, so
+    # its package and source hosts are not needed here. Source hosting stays
+    # blocked so the agent cannot fetch the upstream implementation.
+    assert "raw.githubusercontent.com" not in allowed_hosts
+    assert "nodejs.org" not in allowed_hosts
+    assert "registry.npmjs.org" not in allowed_hosts
 
 
 def test_convert_instance_task_toml_enforces_programbench_policy(tmp_path):
     out = convert_instance(_calc_instance(), tmp_path, allowed_hosts=["api.example.com"])
     cfg = tomllib.loads((out / "task.toml").read_text())
 
-    # Inference is offline; only the model API host is reachable in the agent phase.
+    # An explicit allowlist replaces the defaults for the agent phase.
     assert cfg["environment"]["network_mode"] == "public"
     assert cfg["agent"]["network_mode"] == "allowlist"
     assert cfg["agent"]["allowed_hosts"] == ["api.example.com"]
+
+    # The agent runs non-root so it cannot read the execute-only reference binary.
+    assert cfg["agent"]["user"] == harbor.AGENT_USER != "root"
+
+    # parallelism x cpus must stay inside the host's core count.
+    assert harbor.DOCKER_CPUS == 8
 
     # The verifier runs in its own container; it keeps network for test
     # execution (test.sh blocks only around compile.sh), matching ProgramBench.
@@ -138,8 +198,82 @@ def test_convert_instance_task_toml_enforces_programbench_policy(tmp_path):
     assert cfg["verifier"]["env"]["PYTEST_ADDOPTS"] == "--max-worker-restart=4"
     assert cfg["environment"]["cpus"] == cfg["verifier"]["environment"]["cpus"] == harbor.DOCKER_CPUS
 
-    # The agent's workspace is handed off, minus any prebuilt executable.
-    assert cfg["artifacts"] == [{"source": "/workspace", "exclude": ["executable"]}]
+    # The whole workspace is handed off with no tar exclusions: exclusions push
+    # Harbor onto a transfer path that rejects absolute symlinks, and test.sh
+    # already drops ./executable before compiling.
+    assert cfg["artifacts"] == ["/workspace"]
+    assert "rm -f ./executable" in (harbor.HARBOR_DATA / "test.sh").read_text()
+
+
+def test_convert_instance_bakes_three_hour_agent_timeout(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
+    cfg = tomllib.loads((out / "task.toml").read_text())
+
+    # The agent gets a 3-hour budget so long reverse-engineering tasks finish;
+    # a per-run cost cap (experiment.py) keeps spend bounded under that budget.
+    assert harbor.AGENT_TIMEOUT_SEC == 10800.0
+    assert cfg["agent"]["timeout_sec"] == harbor.AGENT_TIMEOUT_SEC
+
+
+def test_agent_image_ships_inspection_tools_and_drops_sudo(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
+    dockerfile = (out / "environment" / "Dockerfile").read_text()
+
+    # Every trial of the prior run reached for `file`; several reached for `xxd`.
+    assert " file " in dockerfile
+    assert " xxd " in dockerfile
+    # Without this the non-root agent can regain root and read the reference.
+    assert "rm -f /etc/sudoers.d/agent-packages" in dockerfile
+
+
+def test_environment_image_relocates_reference_out_of_workspace(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
+    dockerfile = (out / "environment" / "Dockerfile").read_text()
+
+    # The real reference bytes are copied to a root-only dir outside /workspace,
+    # the original is dropped, and only a symlink is left in its place.
+    assert "cp -a /workspace/executable /opt/programbench/reference/executable" in dockerfile
+    assert "rm -f /workspace/executable" in dockerfile
+    assert "ln -s /opt/programbench/reference/executable /workspace/executable" in dockerfile
+    # The relocated dir/file is root-owned and not group/other writable, so the
+    # agent (who owns /workspace) can only rename/delete the symlink, not the bytes.
+    assert "chown -R root:root /opt/programbench/reference" in dockerfile
+    assert "chmod -R go-w /opt/programbench/reference" in dockerfile
+    # Conditional so exports without a bundled reference stay a no-op.
+    assert "if [ -f /workspace/executable ] && [ ! -L /workspace/executable ]; then" in dockerfile
+
+    # The relocation must run as root before sudo is dropped (otherwise the
+    # chown/relocate could no longer be guaranteed to run privileged).
+    assert dockerfile.index("cp -a /workspace/executable") < dockerfile.index(
+        "rm -f /etc/sudoers.d/agent-packages"
+    )
+
+
+def test_verifier_image_wipes_relocated_reference(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
+    verifier_dockerfile = (out / "tests" / "Dockerfile").read_text()
+
+    # The verifier wipes both /workspace and the relocated reference dir so no
+    # recoverable copy of the reference survives on the verification side either.
+    assert "rm -rf /workspace /opt/programbench/reference" in verifier_dockerfile
+
+
+def test_test_sh_drops_escaping_and_dangling_symlinks(tmp_path):
+    test_sh = (harbor.HARBOR_DATA / "test.sh").read_text()
+
+    # Still drops a leftover ./executable (now possibly a symlink).
+    assert "rm -f ./executable" in test_sh
+    # Hardened cleanup: resolve every workspace symlink and drop any whose
+    # realpath escapes /workspace (dangling links resolve to nothing => dropped).
+    assert 'find "$WORKSPACE" -type l -print0' in test_sh
+    assert 'target="$(readlink -f "$link" 2>/dev/null || true)"' in test_sh
+    assert '"$ws_real"/*) : ;;' in test_sh
+
+
+def test_convert_instance_exports_root_agent_for_oracle_verification(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, agent_user="root")
+
+    assert tomllib.loads((out / "task.toml").read_text())["agent"]["user"] == "root"
 
 
 def test_convert_instance_overwrites_existing(tmp_path):
@@ -229,3 +363,70 @@ def test_divergent_build_scripts_raise(tmp_path, monkeypatch):
     }
     with pytest.raises(ValueError, match="disagree on build.sh"):
         convert_instance(instance, tmp_path / "out")
+
+
+def test_missing_branch_build_sh_backfilled_from_task_level(tmp_path, monkeypatch):
+    tasks = tmp_path / "tasks"
+    iid = "org__tool.deadbeef"
+    # One branch ships a build.sh; the other lacks one (like mdbook's c8cbe415e02d).
+    _fake_branch(tasks / iid, "aaaaaaaaaaaa", "shared recipe\n")
+    no_build = tasks / iid / "tests" / "bbbbbbbbbbbb" / "eval" / "tests"
+    no_build.mkdir(parents=True)
+    (tasks / iid / "tests" / "bbbbbbbbbbbb" / "eval" / "run.sh").write_text("#!/bin/bash\n")
+    (no_build / "test_x.py").write_text("")
+    # Task-level fallback recipe, byte-identical to the branch that ships one.
+    (tasks / iid / "build.sh").write_text("shared recipe\n")
+    monkeypatch.setattr(harbor, "TASKS_DIR", tasks)
+    instance = {
+        "instance_id": iid,
+        "repository": "org/tool",
+        "commit": "deadbeef",
+        "language": "rust",
+        "branches": {
+            "aaaaaaaaaaaa": {"ignored": False, "tests": [], "ignored_tests": []},
+            "bbbbbbbbbbbb": {"ignored": False, "tests": [], "ignored_tests": []},
+        },
+    }
+
+    out = convert_instance(instance, tmp_path / "out")
+
+    # The branch without a build.sh is backfilled from the task-level recipe, so
+    # all active branches agree and the divergence check passes.
+    backfilled = out / "tests" / "branches" / "bbbbbbbbbbbb" / "build.sh"
+    assert backfilled.read_text() == "shared recipe\n"
+
+
+def test_convert_all_skips_failing_instance(tmp_path, monkeypatch):
+    good = {"instance_id": "org__good.1111111", "branches": {"aaaaaaaaaaaa": {"ignored": False}}}
+    bad = {"instance_id": "org__bad.2222222", "branches": {"bbbbbbbbbbbb": {"ignored": False}}}
+    monkeypatch.setattr(harbor, "load_all_instances", lambda: [good, bad])
+
+    def fake_convert(instance, out_root, **kwargs):
+        if instance["instance_id"] == bad["instance_id"]:
+            raise ValueError("boom")
+        path = out_root / instance["instance_id"]
+        path.mkdir(parents=True)
+        return path
+
+    monkeypatch.setattr(harbor, "convert_instance", fake_convert)
+
+    errors: list[tuple[str, Exception]] = []
+    paths = harbor.convert_all(tmp_path / "out", on_error=lambda iid, exc: errors.append((iid, exc)))
+
+    # The good instance is still exported; the bad one is skipped and reported.
+    assert [p.name for p in paths] == ["org__good.1111111"]
+    assert [iid for iid, _ in errors] == ["org__bad.2222222"]
+
+
+def test_convert_all_reraises_without_error_handler(tmp_path, monkeypatch):
+    bad = {"instance_id": "org__bad.2222222", "branches": {"bbbbbbbbbbbb": {"ignored": False}}}
+    monkeypatch.setattr(harbor, "load_all_instances", lambda: [bad])
+
+    def fake_convert(instance, out_root, **kwargs):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(harbor, "convert_instance", fake_convert)
+
+    # Without on_error the batch stays fail-fast (experiment.py relies on this).
+    with pytest.raises(ValueError, match="boom"):
+        harbor.convert_all(tmp_path / "out")

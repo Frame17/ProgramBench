@@ -10,6 +10,12 @@ reproduces its observable behavior.
 {% if target_language %}
 You MUST implement the deliverable in {{ target_language }}. Write all source code in {{ target_language }}. Do not reimplement the program in another language.
 {% endif %}
+{% if use_gradle %}
+You MUST structure the implementation as a Gradle project. `compile.sh` MUST invoke
+Gradle to build the program. Include the Gradle wrapper and vendor the Gradle
+distribution and all project dependencies needed for `compile.sh` to run without
+network access.
+{% endif %}
 ## What to deliver
 
 Work inside `/workspace`. When you are done, that directory must contain:

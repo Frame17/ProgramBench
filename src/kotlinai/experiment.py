@@ -11,9 +11,12 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import re
+import statistics
 import subprocess
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,7 +26,7 @@ import yaml
 
 from kotlinai.harbor import convert_all
 
-REPORT_SCHEMA_VERSION = 2
+REPORT_SCHEMA_VERSION = 3
 RESERVED_HARBOR_FIELDS = {
     "agents",
     "datasets",
@@ -35,8 +38,74 @@ RESERVED_HARBOR_FIELDS = {
 }
 
 
+# npm packages the supported agent CLIs are published as. Harbor installs
+# `@latest` unless an explicit version is passed, so a release landing mid-run
+# would apply to whichever trials happen to start after it — with two languages
+# in one job that is a confound, not just noise.
+AGENT_VERSION_PACKAGES = {"codex": "@openai/codex"}
+
+# Default retry policy for the generated Harbor job. Transient agent API errors
+# (e.g. UnknownApiError, "API Error: Failed to parse JSON") are one-off proxy
+# hiccups that a clean re-run of the trial almost always clears, so retrying
+# recovers otherwise-lost trials. We rely on Harbor's default
+# ``RetryConfig.exclude_exceptions`` (which already contains AgentTimeoutError,
+# VerifierTimeoutError, ApiUsageLimitError, ...) so genuine timeouts/limits stay
+# non-retried. A retry re-runs the whole trial from scratch, so it is capped low.
+DEFAULT_RETRY = {"max_retries": 2}
+
+# Default per-run model spend cap for claude-code (``--max-budget-usd``). The
+# agent timeout is now 3 hours (see ``kotlinai.harbor.AGENT_TIMEOUT_SEC``); this
+# bounds spend under that larger time budget. A retry re-runs the whole trial,
+# so this cap is per agent run, not per trial. Passed as a string, matching how
+# claude-code's CLI flag is resolved from kwargs.
+DEFAULT_AGENT_MAX_BUDGET_USD = "30"
+
+# Two-sided 95% Student's t critical values indexed by degrees of freedom (entry
+# 0 is unused). Beyond the table the value has converged on the normal quantile.
+# fmt: off
+T_CRITICAL_95 = (
+    0.0, 12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228,
+    2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086,
+    2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042,
+)
+# fmt: on
+
+
 class ComparisonError(ValueError):
     """Raised when an experiment cannot guarantee a fair comparison."""
+
+
+def resolve_agent_version(package: str) -> str:
+    """Return the version npm currently publishes as ``latest`` for a package."""
+    with urllib.request.urlopen(f"https://registry.npmjs.org/{package}/latest", timeout=30) as response:
+        return json.load(response)["version"]
+
+
+def pin_agent_version(agent: dict[str, Any], resolver: Callable[[str], str]) -> None:
+    """Pin ``agent`` to one CLI version for the whole run.
+
+    A no-op when there is nothing to pin: the agent is not one we know an npm
+    package for, or the caller already pinned it explicitly.
+    """
+    package = AGENT_VERSION_PACKAGES.get(agent["name"].strip().lower())
+    kwargs = agent.setdefault("kwargs", {})
+    if package is not None and not kwargs.get("version"):
+        kwargs["version"] = resolver(package)
+
+
+def apply_agent_cost_limit(agent: dict[str, Any]) -> None:
+    """Cap claude-code's per-run model spend unless the caller set a limit.
+
+    Harbor passes ``kwargs.max_budget_usd`` to claude-code as ``--max-budget-usd``.
+    Now that the agent timeout is 3 hours (see ``AGENT_TIMEOUT_SEC``), this keeps
+    a single agent run's spend bounded. The flag is claude-code specific, so this
+    is a no-op for other agents, and an explicit ``agent.kwargs.max_budget_usd``
+    in the config still wins.
+    """
+    if agent["name"].strip().lower() != "claude-code":
+        return
+    kwargs = agent.setdefault("kwargs", {})
+    kwargs.setdefault("max_budget_usd", DEFAULT_AGENT_MAX_BUDGET_USD)
 
 
 @dataclass(frozen=True)
@@ -124,6 +193,8 @@ def validate_comparison_config(config: dict[str, Any]) -> ComparisonSettings:
     conflicting_fields = sorted(set(harbor) & RESERVED_HARBOR_FIELDS)
     if conflicting_fields:
         raise ComparisonError(f"harbor contains generated field(s): {conflicting_fields}")
+    if "retry" in harbor and not isinstance(harbor["retry"], dict):
+        raise ComparisonError("harbor.retry must be an object")
     return ComparisonSettings(
         languages=languages,
         parallelism=parallelism,
@@ -140,8 +211,25 @@ def build_comparison_job_config(
     jobs_dir: Path,
     job_name: str,
 ) -> dict[str, Any]:
-    """Create one Harbor job containing every language-specific dataset."""
+    """Create one Harbor job with both languages interleaved task by task.
+
+    One single-task dataset per (task, language) is what interleaves them: Harbor
+    resolves datasets in order and submits trials in that order, so one dataset
+    per language would run every trial of the first language before the second
+    and fold any drift in host load or model serving into the language contrast.
+    The dataset path stays the language directory, so each trial's ``source`` is
+    still the language and the report can attribute it.
+
+    Harbor's ``tasks`` list would express this more directly, but it seeds no
+    entry in the job's metric registry (``Job._resolve_metrics`` walks
+    ``datasets`` only) while the live progress display indexes
+    ``_metrics[source][0]`` — a defaultdict miss that aborts the whole job with
+    an IndexError partway through. Datasets keep that registry populated.
+    """
     config = copy.deepcopy(settings.harbor)
+    # A default retry only when the user has not set one, so an explicit
+    # ``harbor.retry`` in the config still fully overrides it.
+    config.setdefault("retry", copy.deepcopy(DEFAULT_RETRY))
     config["job_name"] = job_name
     config["jobs_dir"] = str(jobs_dir.resolve())
     config["n_concurrent_trials"] = settings.parallelism
@@ -149,8 +237,9 @@ def build_comparison_job_config(
     config["datasets"] = [
         {
             "path": str(task_dirs[_language_key(language)].resolve()),
-            "task_names": list(settings.task_names),
+            "task_names": [task_name],
         }
+        for task_name in settings.task_names
         for language in settings.languages
     ]
     return config
@@ -184,6 +273,7 @@ def run_comparison_experiment(
     *,
     exporter: Callable[..., list[Path]] = convert_all,
     agent_runner: Callable[[Path, Path], int] | None = None,
+    version_resolver: Callable[[str], str] = resolve_agent_version,
 ) -> int:
     """Export both languages and run all trials in one parallel Harbor job."""
     config_path = config_path.resolve()
@@ -195,6 +285,12 @@ def run_comparison_experiment(
         raise ComparisonError(f"Agent runner does not exist: {runner}")
 
     settings = validate_comparison_config(_read_yaml(config_path))
+    # Fail before spending anything if the registry is unreachable; an unpinned
+    # CLI is the confound this run exists to avoid. Pin explicitly in the config
+    # to run without registry access.
+    pin_agent_version(settings.agent, version_resolver)
+    # Bound claude-code's per-run spend now that the agent timeout is 3 hours.
+    apply_agent_cost_limit(settings.agent)
     output_dir.mkdir(parents=True)
     jobs_dir = output_dir / "jobs"
     repo_root = runner.parent.parent
@@ -206,7 +302,11 @@ def run_comparison_experiment(
         "base_config": str(config_path),
         "base_config_sha256": _config_digest(config_path),
         "runner": str(runner),
-        "agent": {"name": settings.agent.get("name"), "model_name": settings.agent.get("model_name")},
+        "agent": {
+            "name": settings.agent.get("name"),
+            "model_name": settings.agent.get("model_name"),
+            "version": settings.agent["kwargs"].get("version"),
+        },
         "language_order": list(settings.languages),
         "parallelism": settings.parallelism,
         "task_names": settings.task_names,
@@ -467,6 +567,40 @@ def _delta(second: dict[str, Any], first: dict[str, Any]) -> dict[str, int | flo
     return result
 
 
+def _paired_difference(tasks: list[dict[str, Any]], first_key: str, second_key: str) -> dict[str, Any]:
+    """Summarize the per-task reward differences, second language minus first.
+
+    The interval is a Student's t interval over the task differences. It is
+    descriptive: the tasks are a fixed selection, not a random sample of
+    programming work, and each task contributes one mean per language.
+    """
+    pairs = [
+        (_numeric(task["results"][first_key]["reward_mean"]), _numeric(task["results"][second_key]["reward_mean"]))
+        for task in tasks
+    ]
+    deltas = [second - first for first, second in pairs if first is not None and second is not None]
+    mean = statistics.fmean(deltas) if deltas else None
+    sd = statistics.stdev(deltas) if len(deltas) > 1 else None
+    degrees_of_freedom = len(deltas) - 1
+    half_width = (
+        (T_CRITICAL_95[degrees_of_freedom] if degrees_of_freedom < len(T_CRITICAL_95) else 1.96)
+        * sd
+        / math.sqrt(len(deltas))
+        if sd
+        else None
+    )
+    return {
+        "n": len(deltas),
+        "mean": mean,
+        "sd": sd,
+        "ci_low": mean - half_width if half_width is not None else None,
+        "ci_high": mean + half_width if half_width is not None else None,
+        "wins": sum(delta > 0 for delta in deltas),
+        "losses": sum(delta < 0 for delta in deltas),
+        "ties": sum(delta == 0 for delta in deltas),
+    }
+
+
 def build_comparison_report(experiment_dir: Path) -> dict[str, Any]:
     experiment_dir = experiment_dir.resolve()
     manifest = _read_json(experiment_dir / "manifest.json")
@@ -521,6 +655,7 @@ def build_comparison_report(experiment_dir: Path) -> dict[str, Any]:
         "delta": {"from": first_key, "to": second_key},
         "task_count": len(task_names),
         "tasks": tasks,
+        "paired": _paired_difference(tasks, first_key, second_key),
         "totals": {
             "results": total_results,
             "delta": _delta(total_results[second_key], total_results[first_key]),
@@ -660,8 +795,24 @@ def render_markdown_report(report: dict[str, Any]) -> str:
             f"{_format_value(totals['delta'][field], kind, delta=True)} |"
         )
 
+    paired = report["paired"]
     lines.extend(
         [
+            "",
+            "## Paired difference",
+            "",
+            f"| Metric | {second_name} minus {first_name} |",
+            "|---|---:|",
+            f"| Paired tasks | {_format_value(paired['n'], 'count')} |",
+            f"| Mean difference | {_format_value(paired['mean'], 'reward', delta=True)} |",
+            f"| Standard deviation | {_format_value(paired['sd'], 'reward')} |",
+            f"| Approximate 95% interval | [{_format_value(paired['ci_low'], 'reward', delta=True)}, "
+            f"{_format_value(paired['ci_high'], 'reward', delta=True)}] |",
+            f"| Task wins ({second_name} / {first_name} / tie) | {_format_value(paired['wins'], 'count')} / "
+            f"{_format_value(paired['losses'], 'count')} / {_format_value(paired['ties'], 'count')} |",
+            "",
+            "The interval is descriptive, not inferential: the tasks are a fixed selection rather than a random "
+            "sample of programming work, and each task contributes one mean per language.",
             "",
             "## Token breakdown by task",
             "",

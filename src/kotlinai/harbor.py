@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import shutil
 import tarfile
+from collections.abc import Callable
 from pathlib import Path
 
 from jinja2 import Environment, PackageLoader
@@ -30,26 +31,57 @@ CLEANROOM_TAG = "task_cleanroom_v6"
 PACKAGE_ROOT = Path(__file__).resolve().parent
 HARBOR_DATA = PACKAGE_ROOT / "data" / "harbor"
 
-# ProgramBench execution policy, mirrored onto Harbor's config.
-DOCKER_CPUS = 10
+# ProgramBench execution policy, mirrored onto Harbor's config. DOCKER_CPUS sits
+# below ProgramBench's 10 on purpose: the comparison harness runs 8 trials at
+# once, and 8 x 10 oversubscribes a 64-core host.
+DOCKER_CPUS = 8
 COMPILE_TIMEOUT_SEC = 900.0
 BRANCH_TIMEOUT_SEC = 3600.0
 BUILD_TIMEOUT_SEC = 1800.0
-AGENT_TIMEOUT_SEC = 3600.0
+# 3 hours. These reverse-engineering tasks need more than the earlier 1-hour cap
+# to finish; a per-run cost limit (see experiment.py) keeps the larger budget
+# bounded. AgentTimeoutError stays in Harbor's exclude_exceptions (not retried).
+AGENT_TIMEOUT_SEC = 10800.0
 KOTLIN_VERSION = "2.4.10"
 KOTLIN_COMPILER_SHA256 = "473dd66c7a3ef4b182065b3da670466c1bf2773a9dbb0ed8b33a39fe9d4f876d"
-# The agent has no internet except the model API; parameterized per runner
-# rather than hardcoded (override with `harbor export --allowed-host`). Codex is
-# installed by Harbor during setup; these hosts support that installation.
-# Language toolchains are installed while Harbor builds the task images, before
-# the restricted agent phase begins.
+# The agent phase can reach model APIs and the package, build-tool, and
+# toolchain documentation hosts needed to assemble an offline JVM submission.
+# Source-hosting and agent-installer hosts remain absent: fetching upstream
+# source would defeat the black-box task, while agent setup runs outside the
+# agent-phase policy under the `[environment]` public baseline. Parameterized
+# per runner (override with `harbor export --allowed-host`).
 DEFAULT_AGENT_ALLOWED_HOSTS = [
     "api.openai.com",
     "api.anthropic.com",
-    "raw.githubusercontent.com",
-    "nodejs.org",
-    "registry.npmjs.org",
+    "repo.maven.apache.org",
+    "repo1.maven.org",
+    "plugins.gradle.org",
+    "services.gradle.org",
+    "downloads.gradle.org",
+    "maven.google.com",
+    "maven.pkg.jetbrains.space",
+    "maven.reposilite.com",
+    "oss.sonatype.org",
+    "kotlinlang.org",
+    "*.kotlinlang.org",
+    "kotl.in",
+    "*.jetbrains.com",
+    "docs.gradle.org",
+    "docs.gradle.com",
+    "gradle.com",
+    "gradle.org",
+    "scans.gradle.com",
+    "help.gradle.org",
+    "developer.android.com",
+    "schemas.android.com",
+    "pub.dartlang.org",
+    "pub.dev",
+    "pnpm.js.org",
+    "ant.apache.org",
 ]
+# The cleanroom image's uid-1000 user. It owns /workspace but, unlike root,
+# cannot read the execute-only reference binary at /workspace/executable.
+AGENT_USER = "agent"
 
 _env = Environment(loader=PackageLoader("kotlinai", "data/templates"), autoescape=False)
 
@@ -88,6 +120,7 @@ def convert_instance(
     blob_dir: Path | None = None,
     allowed_hosts: list[str] | None = None,
     target_language: str | None = None,
+    agent_user: str = AGENT_USER,
 ) -> Path:
     """Write the Harbor task directory for one instance and return its path."""
     iid = instance["instance_id"]
@@ -116,6 +149,7 @@ def convert_instance(
             language=instance["language"],
             difficulty=instance.get("difficulty", ""),
             allowed_hosts=allowed_hosts or DEFAULT_AGENT_ALLOWED_HOSTS,
+            agent_user=agent_user,
             env_cpus=DOCKER_CPUS,
             verifier_cpus=DOCKER_CPUS,
             build_timeout=BUILD_TIMEOUT_SEC,
@@ -126,7 +160,10 @@ def convert_instance(
         )
     )
     (out / "instruction.md").write_text(
-        _env.get_template("harbor_instruction.md.j2").render(target_language=target_language)
+        _env.get_template("harbor_instruction.md.j2").render(
+            target_language=target_language,
+            use_gradle=install_jdk,
+        )
     )
     (out / "environment" / "Dockerfile").write_text(
         _env.get_template("harbor_environment.Dockerfile.j2").render(
@@ -185,8 +222,15 @@ def convert_all(
     slice_spec: str = "",
     allowed_hosts: list[str] | None = None,
     target_language: str | None = None,
+    agent_user: str = AGENT_USER,
+    on_error: Callable[[str, Exception], None] | None = None,
 ) -> list[Path]:
-    """Convert selected instances into Harbor tasks under ``out_root``."""
+    """Convert selected instances into Harbor tasks under ``out_root``.
+
+    When ``on_error`` is supplied, a failure converting one instance is reported
+    through it and that instance is skipped so the remaining ones still convert;
+    otherwise the first failure aborts the whole batch (the strict default).
+    """
     from programbench.utils.instance_filters import filter_instances
 
     instances = load_all_instances()
@@ -197,6 +241,20 @@ def convert_all(
         if missing:
             raise ValueError(f"Unknown instance_id(s): {sorted(missing)}")
     instances = filter_instances(instances, filter_spec=filter_spec, slice_spec=slice_spec, has_test_branch=True)
-    return [
-        convert_instance(i, out_root, allowed_hosts=allowed_hosts, target_language=target_language) for i in instances
-    ]
+    paths: list[Path] = []
+    for instance in instances:
+        try:
+            paths.append(
+                convert_instance(
+                    instance,
+                    out_root,
+                    allowed_hosts=allowed_hosts,
+                    target_language=target_language,
+                    agent_user=agent_user,
+                )
+            )
+        except Exception as exc:
+            if on_error is None:
+                raise
+            on_error(instance["instance_id"], exc)
+    return paths

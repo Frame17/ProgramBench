@@ -17,6 +17,9 @@ dependencies = [
     "tqdm>=4",
     "rich>=13",
     "huggingface_hub>=0.20",
+    "ipykernel>=7.3.0",
+    "matplotlib>=3.10.9",
+    "pandas>=2.3.3",
 ]
 
 [project.scripts]

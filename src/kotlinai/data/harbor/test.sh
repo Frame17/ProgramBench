@@ -33,7 +33,25 @@ mkdir -p /logs/verifier
 cd "$WORKSPACE" || exit 1
 
 # --- anti-cheat: drop any prebuilt binary and byte-identical gold copies ---
+# rm -f also removes a leftover ./executable symlink (the agent image exposes the
+# reference only through a symlink to a root-only path; the real bytes never sit
+# under /workspace, so nothing recoverable is dropped here).
 rm -f ./executable
+# Defense-in-depth: the artifact could still ship a crafted symlink (named
+# ./executable or anything else) that points outside /workspace or dangles. Since
+# docker cp copies links verbatim, resolving one during the rebuild could surface
+# out-of-workspace bytes. Drop every workspace symlink whose realpath escapes
+# /workspace (dangling links resolve to nothing and are dropped too). Compare
+# against the resolved realpath of /workspace so a symlinked mount point (e.g.
+# /var -> /private/var) doesn't misclassify a link that stays inside.
+ws_real="$(readlink -f "$WORKSPACE" 2>/dev/null || echo "$WORKSPACE")"
+while IFS= read -r -d '' link; do
+  target="$(readlink -f "$link" 2>/dev/null || true)"
+  case "$target" in
+    "$ws_real"/*) : ;;
+    *) rm -fv "$link" ;;
+  esac
+done < <(find "$WORKSPACE" -type l -print0 2>/dev/null)
 if [ -s "$TESTS_DIR/clean_hashes.txt" ]; then
   pat="$(tr '\n' '|' < "$TESTS_DIR/clean_hashes.txt" | sed 's/|$//')"
   find "$WORKSPACE" -type f -exec sha256sum {} + 2>/dev/null \
