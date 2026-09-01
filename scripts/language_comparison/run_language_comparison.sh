@@ -7,4 +7,7 @@ cd "$ROOT"
 
 CONFIG="${LANGUAGE_COMPARISON_CONFIG:-$SCRIPT_DIR/config.yaml}"
 
-exec uv run programbench harbor compare --config "$CONFIG" "$@"
+exec uv run programbench harbor compare \
+  --config "$CONFIG" \
+  --include-oracle-payload \
+  "$@"

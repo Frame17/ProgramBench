@@ -20,9 +20,14 @@ model, tasks, language, and concurrency.
 ```
 
 This runs the tasks in `config.yaml` with Harbor's oracle agent.
+Before the run, it exports those tasks with an oracle-only reference payload.
+The task's agent user remains non-root, so the same export can be used with a
+model agent.
 
 Set `HARBOR_CONFIG` to use another job config. Set `HARBOR_SKIP_EXPORT=1` to
-reuse tasks that were already exported.
+reuse tasks that were already exported. Reused tasks need
+`solution/reference.gz` for a non-root oracle run. This file contains the
+reference binary and must only be stored in trusted storage.
 
 ## Language comparison
 

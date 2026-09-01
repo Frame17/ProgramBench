@@ -271,6 +271,7 @@ def run_comparison_experiment(
     output_dir: Path,
     runner: Path,
     *,
+    include_oracle_payload: bool = False,
     exporter: Callable[..., list[Path]] = convert_all,
     agent_runner: Callable[[Path, Path], int] | None = None,
     version_resolver: Callable[[str], str] = resolve_agent_version,
@@ -310,6 +311,7 @@ def run_comparison_experiment(
         "language_order": list(settings.languages),
         "parallelism": settings.parallelism,
         "task_names": settings.task_names,
+        "include_oracle_payload": include_oracle_payload,
         "languages": {},
     }
     manifest_path = output_dir / "manifest.json"
@@ -344,7 +346,12 @@ def run_comparison_experiment(
         _write_json(manifest_path, manifest)
 
         try:
-            exported = exporter(task_dir, instance_ids=settings.task_names, target_language=language)
+            exported = exporter(
+                task_dir,
+                instance_ids=settings.task_names,
+                target_language=language,
+                include_oracle_payload=include_oracle_payload,
+            )
             exported_names = sorted(path.name for path in exported)
             if exported_names != sorted(settings.task_names):
                 raise ComparisonError(

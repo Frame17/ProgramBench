@@ -16,20 +16,30 @@ behavioral suite, reporting the fractional pass rate.
 
 from __future__ import annotations
 
+import gzip
 import json
 import shutil
+import subprocess
 import tarfile
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
 from jinja2 import Environment, PackageLoader
 
-from programbench.constants import TASKS_DIR, image_name_from_instance_id
+from programbench.constants import (
+    DOCKER_CP_TIMEOUT,
+    DOCKER_EXECUTABLE,
+    DOCKER_RUN_TIMEOUT,
+    TASKS_DIR,
+    image_name_from_instance_id,
+)
 from programbench.utils.load_data import get_active_branches, load_all_instances
 
 CLEANROOM_TAG = "task_cleanroom_v6"
 PACKAGE_ROOT = Path(__file__).resolve().parent
 HARBOR_DATA = PACKAGE_ROOT / "data" / "harbor"
+ORACLE_PAYLOAD_NAME = "reference.gz"
 
 # ProgramBench execution policy, mirrored onto Harbor's config. DOCKER_CPUS sits
 # below ProgramBench's 10 on purpose: the comparison harness runs 8 trials at
@@ -86,6 +96,57 @@ AGENT_USER = "agent"
 _env = Environment(loader=PackageLoader("kotlinai", "data/templates"), autoescape=False)
 
 
+def _write_oracle_payload(image_ref: str, destination: Path) -> None:
+    """Copy and compress the reference binary from a cleanroom image."""
+    create = subprocess.run(
+        [DOCKER_EXECUTABLE, "create", image_ref],
+        capture_output=True,
+        text=True,
+        timeout=DOCKER_RUN_TIMEOUT,
+    )
+    if create.returncode != 0:
+        raise RuntimeError(f"Failed to create temporary container from {image_ref}: {create.stderr.strip()}")
+
+    container_id = create.stdout.strip()
+    if not container_id:
+        raise RuntimeError(f"Docker returned no container ID for {image_ref}")
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="programbench-oracle-") as temp_dir:
+            reference = Path(temp_dir) / "executable"
+            copy = subprocess.run(
+                [DOCKER_EXECUTABLE, "cp", f"{container_id}:/workspace/executable", str(reference)],
+                capture_output=True,
+                text=True,
+                timeout=DOCKER_CP_TIMEOUT,
+            )
+            if copy.returncode != 0:
+                raise RuntimeError(
+                    f"Failed to copy /workspace/executable from {image_ref}: {copy.stderr.strip()}"
+                )
+            if not reference.is_file() or reference.stat().st_size == 0:
+                raise RuntimeError(f"Reference binary in {image_ref} is missing or empty")
+            # docker cp preserves the source's execute-only mode. The temporary
+            # host copy belongs to this process, so make it readable before
+            # compression; the image and final task permissions are unchanged.
+            reference.chmod(0o600)
+
+            with reference.open("rb") as source, destination.open("wb") as output:
+                with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
+                    shutil.copyfileobj(source, compressed)
+            destination.chmod(0o644)
+    finally:
+        try:
+            subprocess.run(
+                [DOCKER_EXECUTABLE, "rm", "-f", container_id],
+                capture_output=True,
+                text=True,
+                timeout=DOCKER_RUN_TIMEOUT,
+            )
+        except Exception:
+            pass
+
+
 def _lay_down_branch(task_dir: Path, branch: str, dest: Path, blob_dir: Path | None) -> None:
     """Copy one branch's ``eval/`` test tree into ``dest``.
 
@@ -121,6 +182,7 @@ def convert_instance(
     allowed_hosts: list[str] | None = None,
     target_language: str | None = None,
     agent_user: str = AGENT_USER,
+    include_oracle_payload: bool = False,
 ) -> Path:
     """Write the Harbor task directory for one instance and return its path."""
     iid = instance["instance_id"]
@@ -206,11 +268,21 @@ def convert_instance(
     if len(build_scripts) != 1:
         raise ValueError(f"{iid}: active branches disagree on build.sh ({len(build_scripts)} distinct recipes)")
 
-    # Pack the gold solution: a network-free, language-agnostic oracle. solve.sh
-    # stashes the reference binary from the canonical /workspace/executable path
-    # (readable as root); oracle_compile.sh restores it as ./executable offline.
+    # Pack the gold solution: a network-free, language-agnostic oracle. A
+    # portable task carries a compressed reference under solution/, which
+    # Harbor uploads only for its oracle agent. The root-readable in-container
+    # reference remains a compatibility fallback when no payload is requested.
     shutil.copy(HARBOR_DATA / "oracle_compile.sh", out / "solution" / "compile.sh")
     (out / "solution" / "solve.sh").write_text(_env.get_template("harbor_solve.sh.j2").render())
+    if include_oracle_payload:
+        try:
+            _write_oracle_payload(
+                f"{image_name}:{CLEANROOM_TAG}",
+                out / "solution" / ORACLE_PAYLOAD_NAME,
+            )
+        except Exception:
+            shutil.rmtree(out)
+            raise
     return out
 
 
@@ -223,6 +295,7 @@ def convert_all(
     allowed_hosts: list[str] | None = None,
     target_language: str | None = None,
     agent_user: str = AGENT_USER,
+    include_oracle_payload: bool = False,
     on_error: Callable[[str, Exception], None] | None = None,
 ) -> list[Path]:
     """Convert selected instances into Harbor tasks under ``out_root``.
@@ -251,6 +324,7 @@ def convert_all(
                     allowed_hosts=allowed_hosts,
                     target_language=target_language,
                     agent_user=agent_user,
+                    include_oracle_payload=include_oracle_payload,
                 )
             )
         except Exception as exc:

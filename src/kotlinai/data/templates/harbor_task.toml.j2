@@ -39,9 +39,10 @@ network_mode = "public"
 #
 # The agent runs as {{ agent_user }}. The default is a non-root user, so the
 # mode-111 reference binary at /workspace/executable can be executed but not
-# read, copied, or statically inspected; root would bypass those mode bits
-# entirely and is only for oracle verification, whose golden solve.sh must read
-# the reference (`harbor export --agent-user root`).
+# read, copied, or statically inspected. Oracle-portable exports keep this
+# non-root user and place a compressed reference under solution/, which Harbor
+# uploads only for its oracle agent. Root remains a compatibility fallback for
+# exports without that payload.
 [agent]
 timeout_sec = {{ agent_timeout }}
 user = "{{ agent_user }}"

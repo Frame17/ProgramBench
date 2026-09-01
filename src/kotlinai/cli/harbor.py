@@ -37,8 +37,12 @@ def export(
     agent_user: str = typer.Option(
         AGENT_USER,
         "--agent-user",
-        help="User the agent phase runs as. The default cannot read the execute-only reference binary; "
-        "pass 'root' to export an oracle-verifiable task (the golden solve.sh must read it).",
+        help="User the agent phase runs as. Root remains available for compatibility with non-portable oracle tasks.",
+    ),
+    include_oracle_payload: bool = typer.Option(
+        False,
+        "--include-oracle-payload",
+        help="Store the compressed reference binary under solution/ for non-root oracle runs. Trusted storage only.",
     ),
 ) -> None:
     """Convert ProgramBench instances into Harbor tasks under OUT_DIR."""
@@ -58,6 +62,7 @@ def export(
         allowed_hosts=allowed_host or None,
         target_language=target_language,
         agent_user=agent_user,
+        include_oracle_payload=include_oracle_payload,
         on_error=_skip,
     )
     for p in paths:
@@ -71,6 +76,16 @@ def export(
 @app.command("export-config")
 def export_config(
     config: Path = typer.Argument(..., help="Harbor job config containing target_language and datasets."),
+    agent_user: str = typer.Option(
+        AGENT_USER,
+        "--agent-user",
+        help="User the agent phase runs as. Root remains available for compatibility with non-portable oracle tasks.",
+    ),
+    include_oracle_payload: bool = typer.Option(
+        False,
+        "--include-oracle-payload",
+        help="Store compressed reference binaries under solution/ for non-root oracle runs. Trusted storage only.",
+    ),
 ) -> None:
     """Export the task datasets selected by a Harbor job config."""
     from kotlinai.harbor import convert_all
@@ -109,7 +124,12 @@ def export_config(
             raise typer.BadParameter("Harbor dataset task_names must be a non-empty list of strings")
 
         paths = convert_all(
-            Path(out_dir), instance_ids=task_names or None, target_language=target_language, on_error=_skip
+            Path(out_dir),
+            instance_ids=task_names or None,
+            target_language=target_language,
+            agent_user=agent_user,
+            include_oracle_payload=include_oracle_payload,
+            on_error=_skip,
         )
         total += len(paths)
         for path in paths:
@@ -146,6 +166,11 @@ def compare(
         "--report-only",
         help="Regenerate report.md and report.json from an existing experiment.",
     ),
+    include_oracle_payload: bool = typer.Option(
+        False,
+        "--include-oracle-payload",
+        help="Store compressed reference binaries in both language task sets. Trusted storage only.",
+    ),
 ) -> None:
     """Run the same ProgramBench tasks in two languages and compare them."""
     from kotlinai.experiment import (
@@ -165,7 +190,12 @@ def compare(
             return
 
         target_dir = output_dir or default_experiment_dir()
-        exit_code = run_comparison_experiment(config, target_dir, runner)
+        exit_code = run_comparison_experiment(
+            config,
+            target_dir,
+            runner,
+            include_oracle_payload=include_oracle_payload,
+        )
         typer.echo(target_dir.resolve() / "report.md")
         typer.echo(target_dir.resolve() / "report.json")
         if exit_code:

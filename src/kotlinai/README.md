@@ -45,8 +45,8 @@ uv run programbench harbor export ./out --filter '^svenstaro__' --slice 0:5
 uv run programbench harbor export ./out --target-language Kotlin <id>
 # Restrict the agent's network allowlist to a specific model API host
 uv run programbench harbor export ./out <id> --allowed-host api.openai.com
-# Export an oracle-verifiable task (the golden solve.sh needs root; see below)
-uv run programbench harbor export ./out <id> --agent-user root
+# Export a portable task for trusted storage and non-root oracle runs
+uv run programbench harbor export ./out <id> --include-oracle-payload
 ```
 
 The agent phase runs as the cleanroom image's non-root `agent` user, so the
@@ -65,7 +65,9 @@ installer hosts do not belong on the task allowlist.
 task parallelism, agent, task list, and shared Harbor options from the adjacent
 `config.yaml`. It exports a separate task set for each configured language, runs
 all language-task trials in one Harbor job, and writes Markdown and JSON
-comparisons of reward, cost, agent steps, and tokens.
+comparisons of reward, cost, agent steps, and tokens. The wrapper includes
+oracle payloads in both generated task sets, so its experiment directories
+contain reference binaries and must remain in trusted storage.
 
 ```bash
 ./scripts/language_comparison/run_language_comparison.sh
@@ -108,27 +110,35 @@ Each instance produces a standard Harbor task directory:
   solution/
     solve.sh           # golden solution: stash the reference binary (see below)
     compile.sh         # oracle_compile.sh: restore ./executable from the stash
+    reference.gz       # optional oracle-only payload for trusted storage
 ```
 
 ## The golden solution
 
 ProgramBench's environment ships no source, but a working reference build sits
 at the canonical path the tests target — `/workspace/executable` — execute-only
-so a non-root agent can't read its bytes. The oracle reads them, so it needs
-root: Harbor runs `solve.sh` as the task's `[agent] user`, which means oracle
-verification requires a task exported with `--agent-user root`. It then
-reconstructs `./executable` with **no network** and no per-language vendoring:
+so a non-root agent can't read its bytes. An export created with
+`--include-oracle-payload` also stores a compressed copy at
+`solution/reference.gz`. Stock Harbor uploads `solution/` only for its oracle
+agent, so both oracle and model agents can use the same task while the task's
+configured agent user remains non-root. The oracle reconstructs `./executable`
+with **no network** and no per-language vendoring:
 
-1. `solve.sh` base64-encodes `/workspace/executable` into
-   `/workspace/.programbench_oracle_reference`.
+1. `solve.sh` copies `solution/reference.gz` into
+   `/workspace/.programbench_oracle_reference.gz`.
 2. It drops `oracle_compile.sh` in as `/workspace/compile.sh`.
 3. Harbor hands the agent's `/workspace` (minus `./executable`) to the separate
-   verifier, which runs `compile.sh` offline — `base64 -d` restores
+   verifier, which runs `compile.sh` offline — `gzip -dc` restores
    `./executable` — and scores every active branch.
 
-Because the stash is base64 (a different sha256 from the raw binary), it
+Because the stash is compressed (a different sha256 from the raw binary), it
 survives the verifier's clean-hash scrub; `./executable` is produced only after
-that scrub. A correct oracle resolves every non-ignored, non-flaky test.
+that scrub. A correct oracle resolves every non-ignored, non-flaky test. Exports
+without the payload retain the older root-readable reference fallback.
+
+The payload contains the reference binary and therefore the benchmark answer.
+Use it only in trusted storage. Model agents do not receive `/solution`, but
+anyone who can read the task archive can extract the payload.
 
 > Note: `eval_clean_hashes` is **not** the installed reference's hash — it's a
 > gold-build hash from a different toolchain, so the binary can't be located by
@@ -156,7 +166,7 @@ if the JUnit XML marks it passed (absent counts as unresolved). It writes:
   still needs network access while building the task images.
 
 ```bash
-uv run programbench harbor export ./out <instance_id> --agent-user root
+uv run programbench harbor export ./out <instance_id> --include-oracle-payload
 harbor trials start --path ./out/<instance_id> --agent oracle
 ```
 

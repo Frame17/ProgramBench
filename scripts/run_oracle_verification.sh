@@ -6,7 +6,7 @@ cd "$ROOT"
 CONFIG="${HARBOR_CONFIG:-$ROOT/scripts/config.yaml}"
 
 if [[ "${HARBOR_SKIP_EXPORT:-0}" != "1" ]]; then
-  uv run programbench harbor export-config "$CONFIG"
+  uv run programbench harbor export-config "$CONFIG" --include-oracle-payload
 fi
 
 exec harbor run \

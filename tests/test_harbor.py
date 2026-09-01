@@ -6,8 +6,11 @@
 
 """Tests for the Harbor task exporter and its verifier scoring."""
 
+import gzip
 import importlib.util
+import subprocess
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -68,6 +71,87 @@ def test_convert_instance_emits_full_harbor_layout(tmp_path):
     assert "git clone" not in solve
     assert ".programbench_oracle_reference" in solve
     assert (out / "solution" / "compile.sh").read_text() == (HARBOR_DATA / "oracle_compile.sh").read_text()
+    assert not (out / "solution" / harbor.ORACLE_PAYLOAD_NAME).exists()
+
+
+def test_write_oracle_payload_compresses_reference_and_removes_container(tmp_path, monkeypatch):
+    calls = []
+    reference_bytes = b"portable oracle reference\x00\x01"
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[1] == "create":
+            return subprocess.CompletedProcess(command, 0, stdout="container-id\n", stderr="")
+        if command[1] == "cp":
+            reference = Path(command[-1])
+            reference.write_bytes(reference_bytes)
+            reference.chmod(0o111)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(harbor.subprocess, "run", fake_run)
+    destination = tmp_path / "reference.gz"
+
+    harbor._write_oracle_payload("programbench/example:task_cleanroom_v6", destination)
+
+    assert gzip.decompress(destination.read_bytes()) == reference_bytes
+    assert destination.stat().st_mode & 0o777 == 0o644
+    assert calls[0] == [harbor.DOCKER_EXECUTABLE, "create", "programbench/example:task_cleanroom_v6"]
+    assert calls[-1] == [harbor.DOCKER_EXECUTABLE, "rm", "-f", "container-id"]
+
+
+def test_write_oracle_payload_removes_container_after_copy_failure(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[1] == "create":
+            return subprocess.CompletedProcess(command, 0, stdout="container-id\n", stderr="")
+        if command[1] == "cp":
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="missing")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(harbor.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Failed to copy /workspace/executable"):
+        harbor._write_oracle_payload("programbench/example:task_cleanroom_v6", tmp_path / "reference.gz")
+
+    assert calls[-1] == [harbor.DOCKER_EXECUTABLE, "rm", "-f", "container-id"]
+
+
+def test_convert_instance_can_include_oracle_payload_without_root(tmp_path, monkeypatch):
+    reference_bytes = b"reference"
+    calls = []
+
+    def fake_write(image_ref, destination):
+        calls.append((image_ref, destination))
+        destination.write_bytes(gzip.compress(reference_bytes, mtime=0))
+
+    monkeypatch.setattr(harbor, "_write_oracle_payload", fake_write)
+    out = convert_instance(_calc_instance(), tmp_path, include_oracle_payload=True)
+
+    payload = out / "solution" / harbor.ORACLE_PAYLOAD_NAME
+    assert gzip.decompress(payload.read_bytes()) == reference_bytes
+    assert tomllib.loads((out / "task.toml").read_text())["agent"]["user"] == harbor.AGENT_USER
+    assert calls == [
+        (
+            "programbench/testorg_1776_calculator.abc1234:task_cleanroom_v6",
+            payload,
+        )
+    ]
+    assert "/solution/reference.gz" in (out / "solution" / "solve.sh").read_text()
+    assert 'gzip -dc "$STASH"' in (out / "solution" / "compile.sh").read_text()
+
+
+def test_convert_instance_removes_partial_task_when_oracle_payload_fails(tmp_path, monkeypatch):
+    def fail_write(image_ref, destination):
+        raise RuntimeError("payload failed")
+
+    monkeypatch.setattr(harbor, "_write_oracle_payload", fail_write)
+
+    with pytest.raises(RuntimeError, match="payload failed"):
+        convert_instance(_calc_instance(), tmp_path, include_oracle_payload=True)
+
+    assert not (tmp_path / "testorg__calculator.abc1234").exists()
 
 
 def test_convert_instance_instructs_agent_to_use_target_language(tmp_path):

@@ -7,6 +7,8 @@
 """Tests for the two-language Harbor comparison harness."""
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -33,6 +35,45 @@ def _base_config() -> dict:
         "tasks": {"task_names": ["task-a", "task-b"]},
         "harbor": {"n_attempts": 2, "retry": {"max_retries": 1}},
     }
+
+
+def test_language_comparison_wrapper_includes_oracle_payload_and_forwards_arguments(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    args_log = tmp_path / "args.txt"
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$ARGS_LOG"\n')
+    fake_uv.chmod(0o755)
+    config = tmp_path / "config.yaml"
+    output_dir = tmp_path / "experiment"
+    wrapper = Path(__file__).resolve().parents[1] / "scripts" / "language_comparison" / "run_language_comparison.sh"
+    env = {
+        **os.environ,
+        "ARGS_LOG": str(args_log),
+        "LANGUAGE_COMPARISON_CONFIG": str(config),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+    }
+
+    result = subprocess.run(
+        [str(wrapper), "--output-dir", str(output_dir)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert args_log.read_text().splitlines() == [
+        "run",
+        "programbench",
+        "harbor",
+        "compare",
+        "--config",
+        str(config),
+        "--include-oracle-payload",
+        "--output-dir",
+        str(output_dir),
+    ]
 
 
 def test_comparison_job_config_contains_both_languages_and_shared_parameters(tmp_path):
@@ -171,8 +212,14 @@ def test_experiment_uses_configured_language_order_and_reports_after_failure(tmp
     output_dir = tmp_path / "experiment"
     calls = []
 
-    def fake_export(out_dir: Path, *, instance_ids: list[str], target_language: str):
-        calls.append(("export", target_language))
+    def fake_export(
+        out_dir: Path,
+        *,
+        instance_ids: list[str],
+        target_language: str,
+        include_oracle_payload: bool,
+    ):
+        calls.append(("export", target_language, include_oracle_payload))
         paths = []
         for instance_id in instance_ids:
             path = out_dir / instance_id
@@ -194,14 +241,16 @@ def test_experiment_uses_configured_language_order_and_reports_after_failure(tmp
         exporter=fake_export,
         agent_runner=fake_run,
         version_resolver=lambda package: "1.2.3",
+        include_oracle_payload=True,
     )
 
     assert exit_code == 1
-    assert calls == [("export", "Go"), ("export", "Rust"), ("run", "comparison")]
+    assert calls == [("export", "Go", True), ("export", "Rust", True), ("run", "comparison")]
     manifest = json.loads((output_dir / "manifest.json").read_text())
     assert manifest["status"] == "failed"
     assert manifest["language_order"] == ["Go", "Rust"]
     assert manifest["parallelism"] == 3
+    assert manifest["include_oracle_payload"] is True
     assert manifest["languages"]["go"]["status"] == "failed"
     assert manifest["languages"]["rust"]["status"] == "failed"
     assert manifest["job"]["status"] == "failed"
@@ -226,7 +275,14 @@ def test_experiment_pins_one_agent_version_per_run(tmp_path):
         resolved.append(package)
         return "9.9.9"
 
-    def fake_export(out_dir: Path, *, instance_ids: list[str], target_language: str):
+    def fake_export(
+        out_dir: Path,
+        *,
+        instance_ids: list[str],
+        target_language: str,
+        include_oracle_payload: bool,
+    ):
+        assert include_oracle_payload is False
         return [(out_dir / instance_id) for instance_id in instance_ids]
 
     def run(output_dir: Path, config: dict) -> dict:
@@ -244,6 +300,7 @@ def test_experiment_pins_one_agent_version_per_run(tmp_path):
     derived = run(tmp_path / "resolved", _base_config())
     assert resolved == ["@openai/codex"]
     assert derived["agents"][0]["kwargs"]["version"] == "9.9.9"
+    assert json.loads((tmp_path / "resolved" / "manifest.json").read_text())["include_oracle_payload"] is False
     assert json.loads((tmp_path / "resolved" / "manifest.json").read_text())["agent"]["version"] == "9.9.9"
 
     # An explicit pin wins, and no registry lookup happens.

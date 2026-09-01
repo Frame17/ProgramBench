@@ -3,12 +3,12 @@
 #
 # The black-box environment ships a working reference build at the canonical
 # path the tests target — /workspace/executable — execute-only so a non-root
-# agent cannot read its bytes. The oracle runs as root, so it can: it copies the
-# reference into a base64 stash under /workspace and ships an offline compile.sh
-# that decodes it. The stash and compile.sh are handed off to the separate
-# verifier as /workspace artifacts (the raw ./executable is excluded from the
-# handoff); base64 changes the bytes' hash, so the stash also survives the
-# verifier's clean-hash scrub, and ./executable is decoded only afterwards.
+# agent cannot read its bytes. Portable tasks carry a compressed copy under
+# /solution, a directory Harbor uploads only for its oracle agent. For older
+# root-agent exports, the installed reference remains a fallback. The stash and
+# compile.sh are handed off to the separate verifier as /workspace artifacts;
+# compression changes the bytes' hash, so the stash survives the verifier's
+# clean-hash scrub, and ./executable is decompressed only afterwards.
 #
 # (eval_clean_hashes is NOT the installed reference's hash — it is a gold-build
 # hash from a different toolchain — so the reference cannot be located by it;
@@ -18,14 +18,21 @@ set -euo pipefail
 
 WORKSPACE=/workspace
 REFERENCE="$WORKSPACE/executable"
-STASH="$WORKSPACE/.programbench_oracle_reference"
+PAYLOAD=/solution/reference.gz
+STASH="$WORKSPACE/.programbench_oracle_reference.gz"
 
-if [ ! -x "$REFERENCE" ]; then
-  echo "FATAL: no reference binary at $REFERENCE to stash" >&2
-  exit 1
-fi
-if ! base64 "$REFERENCE" > "$STASH" 2>/dev/null; then
-  echo "FATAL: cannot read the reference binary (need root to read the execute-only $REFERENCE)" >&2
+if [ -f "$PAYLOAD" ]; then
+  if ! cp "$PAYLOAD" "$STASH"; then
+    echo "FATAL: cannot copy the packaged oracle payload from $PAYLOAD" >&2
+    exit 1
+  fi
+elif [ -x "$REFERENCE" ]; then
+  if ! gzip -c "$REFERENCE" > "$STASH" 2>/dev/null; then
+    echo "FATAL: cannot read the reference binary; re-export with --include-oracle-payload or use root" >&2
+    exit 1
+  fi
+else
+  echo "FATAL: no packaged oracle payload or reference binary available" >&2
   exit 1
 fi
 
