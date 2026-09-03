@@ -15,7 +15,7 @@ RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu
 {% elif install_jdk %}
 RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends file openjdk-21-jdk-headless ripgrep xxd \
+    && apt-get install -y --no-install-recommends ca-certificates curl file openjdk-21-jdk-headless ripgrep unzip xxd \
     && rm -rf /var/lib/apt/lists/*
 {% else %}
 RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list \
@@ -23,6 +23,13 @@ RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu
     && apt-get install -y --no-install-recommends file ripgrep xxd \
     && rm -rf /var/lib/apt/lists/*
 {% endif %}
+# Git 2.34/libcurl 7.81 in the cleanroom images receives a spurious 401 from
+# GitHub when Git protocol v2 uses HTTP/2. Harbor's Codex installer clones NVM
+# from GitHub before running the agent, so keep that URL on HTTP/1.1. Images
+# without Git use NVM's curl fallback and need no configuration.
+RUN if command -v git >/dev/null 2>&1; then \
+        git config --system http.https://github.com.version HTTP/1.1; \
+    fi
 # Reference isolation: the cleanroom bakes the execute-only reference binary at
 # /workspace/executable, but /workspace itself is agent-owned, so the agent can
 # `mv` the file (Unix rename permission is on the containing directory, not the
@@ -53,6 +60,38 @@ ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 {% if install_kotlin %}
 ENV KOTLIN_HOME=/opt/kotlinc
 ENV PATH="${KOTLIN_HOME}/bin:${PATH}"
+{% endif %}
+{% if install_gradle %}
+# Bake a pinned Gradle so JVM agents can build offline. During the agent phase,
+# services.gradle.org (and a wrapper's own distribution download) redirect to the
+# deliberately blocked GitHub hosts, so the agent cannot fetch Gradle itself.
+# Download and verify the distribution here, at build time, where the network is
+# public — mirroring the Kotlin compiler install above. JAVA_HOME is set above,
+# so Gradle can run for the wrapper-cache priming step below.
+RUN curl -fsSLo /tmp/gradle.zip \
+        "https://services.gradle.org/distributions/gradle-{{ gradle_version }}-bin.zip" \
+    && echo "{{ gradle_sha256 }}  /tmp/gradle.zip" | sha256sum -c - \
+    && unzip -q /tmp/gradle.zip -d /opt \
+    && rm -f /tmp/gradle.zip
+ENV GRADLE_HOME=/opt/gradle-{{ gradle_version }}
+ENV GRADLE_USER_HOME=/opt/gradle-home
+ENV PATH="${GRADLE_HOME}/bin:${PATH}"
+# Prime the wrapper distribution cache so a self-generated ./gradlew resolves the
+# pinned distribution from GRADLE_USER_HOME instead of downloading it through the
+# blocked redirect. Generate a throwaway wrapper and run it once (no daemon, so no
+# per-daemon registry is baked) to cache the distribution under
+# ${GRADLE_USER_HOME}/wrapper/dists. Drop the throwaway project plus any volatile
+# daemon/tmp state — a stale baked daemon registry breaks a fresh run — then make
+# the tree world-writable so the non-root agent reuses the primed cache and can
+# write the runtime state Gradle needs at startup (native libs, caches, daemon).
+RUN mkdir -p /tmp/gradle-seed \
+    && cd /tmp/gradle-seed \
+    && touch settings.gradle \
+    && gradle wrapper --gradle-version {{ gradle_version }} --no-daemon \
+    && ./gradlew --version --no-daemon \
+    && cd / \
+    && rm -rf /tmp/gradle-seed /opt/gradle-home/daemon /opt/gradle-home/.tmp \
+    && chmod -R a+rwX /opt/gradle-home
 {% endif %}
 
 WORKDIR /workspace

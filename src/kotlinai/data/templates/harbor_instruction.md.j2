@@ -18,15 +18,23 @@ Work inside `/workspace`. When you are done, that directory must contain:
 - A `compile.sh` script that builds your program.
 
 `compile.sh` will be run from `/workspace` and **must** produce a single
-executable at `/workspace/executable`. It must build **fully offline** — no
-network access is available during the build, so vendor or bundle every
-dependency you need.
+executable at `/workspace/executable`.
+
+{% if use_gradle %}
+## Build with Gradle
+
+You MUST structure the implementation as a Gradle project. `compile.sh` MUST invoke
+Gradle to build the program.
+
+Gradle {{ gradle_version }} is pre-installed on your `PATH`, and `GRADLE_USER_HOME`
+is pre-seeded with the matching wrapper distribution cache.
+{% endif %}
 
 ## How you are scored
 
 After you finish, `/workspace/executable` is rebuilt from your `compile.sh`
-(with the internet blocked) and a hidden behavioral test suite runs it against
-many inputs, comparing its output to the reference program. Your score is the
+and a hidden behavioral test suite runs it against many inputs,
+comparing its output to the reference program. Your score is the
 fraction of tests that pass. Aim to match the reference program's behavior as
 closely as possible, including edge cases, flags, exit codes, and output
 formatting.

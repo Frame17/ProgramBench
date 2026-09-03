@@ -7,11 +7,16 @@ solution** so Harbor's oracle agent can verify the task end to end.
 One ProgramBench instance maps to one Harbor task. The environment is the
 black-box `task_cleanroom_v6` image (reference binary installed, source
 removed). Kotlin exports add OpenJDK 21 and the Kotlin 2.4.10 compiler to both
-the agent and separate verifier images; Java exports add OpenJDK 21. The agent
-can therefore build and test without spending benchmark time installing its
-toolchain. The verifier rebuilds the submission's `compile.sh` with no network
-and runs every active behavioral branch against it, reporting the fractional
-pass rate.
+the agent and separate verifier images; Java exports add OpenJDK 21. Both JVM
+(Java and Kotlin) exports also bake in Gradle 8.14 — verified against a pinned
+SHA-256 during the public-network image build — and prime its wrapper
+distribution cache under a baked `GRADLE_USER_HOME`, so `gradle` and a
+project-generated `./gradlew` both work fully offline without reaching the
+`services.gradle.org`→GitHub redirect that the agent allowlist deliberately
+blocks. The agent can therefore build and test without spending benchmark time
+installing its toolchain. The verifier rebuilds the submission's `compile.sh`
+with no network and runs every active behavioral branch against it, reporting
+the fractional pass rate.
 
 ## Layout
 

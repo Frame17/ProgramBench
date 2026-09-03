@@ -165,6 +165,8 @@ def test_convert_instance_instructs_agent_to_use_target_language(tmp_path):
     assert "`compile.sh` MUST invoke\nGradle to build the program." in instruction
     assert "vendor the Gradle\ndistribution and all project dependencies" in instruction
     assert "run without\nnetwork access" in instruction
+    # The pre-installed Gradle is named so the agent does not try to fetch it.
+    assert f"Gradle {harbor.GRADLE_VERSION} is pre-installed" in instruction
 
 
 def test_convert_instance_only_requires_gradle_for_jvm_targets(tmp_path):
@@ -209,6 +211,39 @@ def test_convert_instance_does_not_add_jvm_toolchain_for_other_targets(tmp_path)
         assert "kotlin-compiler" not in contents
 
 
+@pytest.mark.parametrize("target_language", ["Java", "Kotlin"])
+def test_convert_instance_bakes_gradle_into_agent_and_verifier(tmp_path, target_language):
+    out = convert_instance(_calc_instance(), tmp_path, target_language=target_language)
+
+    for dockerfile in [out / "environment" / "Dockerfile", out / "tests" / "Dockerfile"]:
+        contents = dockerfile.read_text()
+        # The pinned distribution is fetched and verified at build time (public
+        # network), then unzipped to /opt — mirroring the Kotlin compiler install.
+        assert (
+            f"https://services.gradle.org/distributions/gradle-{harbor.GRADLE_VERSION}-bin.zip" in contents
+        )
+        assert harbor.GRADLE_DISTRIBUTION_SHA256 in contents
+        assert "sha256sum -c -" in contents
+        assert f"ENV GRADLE_HOME=/opt/gradle-{harbor.GRADLE_VERSION}" in contents
+        assert "ENV GRADLE_USER_HOME=/opt/gradle-home" in contents
+        assert 'ENV PATH="${GRADLE_HOME}/bin:${PATH}"' in contents
+        # The wrapper distribution cache is primed so ./gradlew resolves offline.
+        assert f"gradle wrapper --gradle-version {harbor.GRADLE_VERSION}" in contents
+        # The Gradle distribution is fetched from services.gradle.org, never from a
+        # GitHub source-hosting URL (only the Kotlin compiler uses github.com).
+        assert "github.com/gradle" not in contents.lower()
+        assert "githubusercontent.com" not in contents.lower()
+
+
+def test_convert_instance_does_not_bake_gradle_for_other_targets(tmp_path):
+    out = convert_instance(_calc_instance(), tmp_path, target_language="Rust")
+
+    for dockerfile in [out / "environment" / "Dockerfile", out / "tests" / "Dockerfile"]:
+        contents = dockerfile.read_text()
+        assert "gradle" not in contents.lower()
+        assert "GRADLE_HOME" not in contents
+
+
 def test_default_agent_allowlist_exposes_build_hosts_but_not_source_hosts(tmp_path):
     out = convert_instance(_calc_instance(), tmp_path, target_language="Kotlin")
     allowed_hosts = tomllib.loads((out / "task.toml").read_text())["agent"]["allowed_hosts"]
@@ -219,6 +254,7 @@ def test_default_agent_allowlist_exposes_build_hosts_but_not_source_hosts(tmp_pa
         "repo.maven.apache.org",
         "repo1.maven.org",
         "plugins.gradle.org",
+        "plugins-artifacts.gradle.org",
         "services.gradle.org",
         "downloads.gradle.org",
         "maven.google.com",
@@ -246,6 +282,7 @@ def test_default_agent_allowlist_exposes_build_hosts_but_not_source_hosts(tmp_pa
     assert "repo.maven.apache.org" in allowed_hosts
     assert "repo1.maven.org" in allowed_hosts
     assert "plugins.gradle.org" in allowed_hosts
+    assert "plugins-artifacts.gradle.org" in allowed_hosts
     assert "services.gradle.org" in allowed_hosts
     assert "downloads.gradle.org" in allowed_hosts
     assert "maven.google.com" in allowed_hosts
@@ -306,6 +343,9 @@ def test_agent_image_ships_inspection_tools_and_drops_sudo(tmp_path):
     # Every trial of the prior run reached for `file`; several reached for `xxd`.
     assert " file " in dockerfile
     assert " xxd " in dockerfile
+    # The cleanroom's old Git/libcurl fails GitHub's protocol-v2 exchange over
+    # HTTP/2, which prevents Harbor's Codex installer from cloning NVM.
+    assert "git config --system http.https://github.com.version HTTP/1.1" in dockerfile
     # Without this the non-root agent can regain root and read the reference.
     assert "rm -f /etc/sudoers.d/agent-packages" in dockerfile
 

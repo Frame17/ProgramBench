@@ -54,6 +54,13 @@ BUILD_TIMEOUT_SEC = 1800.0
 AGENT_TIMEOUT_SEC = 10800.0
 KOTLIN_VERSION = "2.4.10"
 KOTLIN_COMPILER_SHA256 = "473dd66c7a3ef4b182065b3da670466c1bf2773a9dbb0ed8b33a39fe9d4f876d"
+# Gradle is the JVM build tool for both Java and Kotlin exports. It is baked into
+# the images at build time (public network) and its wrapper distribution cache is
+# primed, so both `gradle` and a generated `./gradlew` work offline without
+# reaching services.gradle.org (which redirects to the blocked GitHub hosts).
+# Pinned by version + SHA-256 for reproducibility, like the Kotlin compiler.
+GRADLE_VERSION = "8.14"
+GRADLE_DISTRIBUTION_SHA256 = "61ad310d3c7d3e5da131b76bbf22b5a4c0786e9d892dae8c1658d4b484de3caa"
 # The agent phase can reach model APIs and the package, build-tool, and
 # toolchain documentation hosts needed to assemble an offline JVM submission.
 # Source-hosting and agent-installer hosts remain absent: fetching upstream
@@ -66,6 +73,7 @@ DEFAULT_AGENT_ALLOWED_HOSTS = [
     "repo.maven.apache.org",
     "repo1.maven.org",
     "plugins.gradle.org",
+    "plugins-artifacts.gradle.org",
     "services.gradle.org",
     "downloads.gradle.org",
     "maven.google.com",
@@ -194,6 +202,8 @@ def convert_instance(
     normalized_target_language = (target_language or "").strip().lower()
     install_jdk = normalized_target_language in {"java", "kotlin"}
     install_kotlin = normalized_target_language == "kotlin"
+    # Gradle is the build tool for both Java and Kotlin submissions.
+    install_gradle = install_jdk
     task_dir = TASKS_DIR / iid
     out = out_root / iid
     if out.exists():
@@ -224,7 +234,8 @@ def convert_instance(
     (out / "instruction.md").write_text(
         _env.get_template("harbor_instruction.md.j2").render(
             target_language=target_language,
-            use_gradle=install_jdk,
+            use_gradle=install_gradle,
+            gradle_version=GRADLE_VERSION,
         )
     )
     (out / "environment" / "Dockerfile").write_text(
@@ -235,6 +246,9 @@ def convert_instance(
             install_kotlin=install_kotlin,
             kotlin_version=KOTLIN_VERSION,
             kotlin_compiler_sha256=KOTLIN_COMPILER_SHA256,
+            install_gradle=install_gradle,
+            gradle_version=GRADLE_VERSION,
+            gradle_sha256=GRADLE_DISTRIBUTION_SHA256,
         )
     )
     # The separate verifier builds its own image from the tests/ dir (its build
@@ -247,6 +261,9 @@ def convert_instance(
             install_kotlin=install_kotlin,
             kotlin_version=KOTLIN_VERSION,
             kotlin_compiler_sha256=KOTLIN_COMPILER_SHA256,
+            install_gradle=install_gradle,
+            gradle_version=GRADLE_VERSION,
+            gradle_sha256=GRADLE_DISTRIBUTION_SHA256,
         )
     )
 

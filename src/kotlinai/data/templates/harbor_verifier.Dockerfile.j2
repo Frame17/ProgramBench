@@ -15,7 +15,7 @@ RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu
 # Java submissions also rebuild offline in this image.
 RUN sed -i 's#https://snapshot.ubuntu.com/ubuntu/[0-9TZ]*/#http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends openjdk-21-jdk-headless \
+    && apt-get install -y --no-install-recommends ca-certificates curl openjdk-21-jdk-headless unzip \
     && rm -rf /var/lib/apt/lists/*
 {% endif %}
 {% if install_jdk %}
@@ -24,6 +24,33 @@ ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 {% if install_kotlin %}
 ENV KOTLIN_HOME=/opt/kotlinc
 ENV PATH="${KOTLIN_HOME}/bin:${PATH}"
+{% endif %}
+{% if install_gradle %}
+# The offline compile.sh rebuild may invoke Gradle, so the verifier image must
+# ship the same pinned Gradle and primed wrapper cache as the agent environment
+# (offline parity). Fetch and verify the distribution here, at build time, where
+# the verifier's [verifier.environment] baseline network is public.
+RUN curl -fsSLo /tmp/gradle.zip \
+        "https://services.gradle.org/distributions/gradle-{{ gradle_version }}-bin.zip" \
+    && echo "{{ gradle_sha256 }}  /tmp/gradle.zip" | sha256sum -c - \
+    && unzip -q /tmp/gradle.zip -d /opt \
+    && rm -f /tmp/gradle.zip
+ENV GRADLE_HOME=/opt/gradle-{{ gradle_version }}
+ENV GRADLE_USER_HOME=/opt/gradle-home
+ENV PATH="${GRADLE_HOME}/bin:${PATH}"
+# Prime the wrapper distribution cache so a project's ./gradlew resolves the
+# pinned distribution offline from GRADLE_USER_HOME during the compile step. Run
+# with --no-daemon and drop any volatile daemon/tmp state afterwards (a stale
+# baked daemon registry breaks a fresh run), then make the tree world-writable so
+# the compile user reuses the primed cache and can write Gradle's runtime state.
+RUN mkdir -p /tmp/gradle-seed \
+    && cd /tmp/gradle-seed \
+    && touch settings.gradle \
+    && gradle wrapper --gradle-version {{ gradle_version }} --no-daemon \
+    && ./gradlew --version --no-daemon \
+    && cd / \
+    && rm -rf /tmp/gradle-seed /opt/gradle-home/daemon /opt/gradle-home/.tmp \
+    && chmod -R a+rwX /opt/gradle-home
 {% endif %}
 # The separate verifier must not inherit anything the agent left behind: wipe
 # /workspace at build time. Harbor then restores only the handed-off artifacts
